@@ -1,5 +1,6 @@
 
 # standard
+import sys
 import numpy as np 
 import time as timer
 import os
@@ -9,6 +10,8 @@ import tqdm
 import glob 
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 # custom
 import plotter 
@@ -145,15 +148,15 @@ def main():
 
     # config_path = util.get_config_path("fixed_wing")
     # config_path = util.get_config_path("value_convergence")
-    config_path = util.get_config_path("policy_convergence")
+    config_path = util.get_config_path("policy_convergence_drone")
 
     # Ns = [100, 1000, 10000]
     # Ns = [50, 100, 500, 1000, 5000, 10000, 50000, 100000, 500000, 1000000, 5000000, 10000000] # this is as far as I got on 64
     # Ns = [50, 100, 500, 1000, 5000, 10000, 50000, 100000, 500000, 1000000, 5000000]
-    Ns = [50, 100, 500, 1000, 5000, 10000, 50000, 100000, 500000, 1000000] # this is as far as I got on 32 gb
+    # Ns = [50, 100, 500, 1000, 5000, 10000, 50000, 100000, 500000, 1000000] # this is as far as I got on 32 gb
     # Ns = [50, 100, 500, 1000, 5000, 10000, 50000, 100000, 500000] 
     # Ns = [50, 100, 500, 1000, 5000, 10000, 50000] 
-    # Ns = [50, 100, 500]
+    Ns = [50, 100, 500, 5000]
 
     if only_plot:
         fns = glob.glob("../data/policy_convergence_*.pkl")
@@ -175,7 +178,7 @@ def main():
     plot_policy_convergence_results(results)
 
     plotter.save_figs("../plots/policy_convergence.pdf")
-    plotter.open_figs("../plots/policy_convergence.pdf")
+    # plotter.open_figs("../plots/policy_convergence.pdf")
 
     print("done!")
 
