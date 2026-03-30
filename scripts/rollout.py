@@ -910,7 +910,7 @@ def main():
         if result is not None:
             plot_result(result)
     plotter.save_figs("../plots/rollout.pdf")
-    plotter.open_figs("../plots/rollout.pdf")
+    # plotter.open_figs("../plots/rollout.pdf")
     # plotter.show_figs()
 
     print("done!")

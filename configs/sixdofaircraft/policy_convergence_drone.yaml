@@ -2,8 +2,8 @@
  config_name: "policy_convergence"
  config_path: "../configs/sixdofaircraft/policy_convergence_drone.yaml"
  # modes
- flight_mode: "fixed_wing" # ["quadrotor", "fixed_wing", "transition"]
- aero_mode: "linear" # ["empty", "linear", "nonlinear"]
+ flight_mode: "quadrotor" # ["quadrotor", "fixed_wing", "transition"]
+ aero_mode: "empty" # ["empty", "linear", "nonlinear"]
  wind_mode: "thermal" # ["empty", "thermal"]
  reward_mode: "observation" # ["regulation", "observation"]
  target_special_idxs: [0]
@@ -26,19 +26,19 @@
  ground_mdp_control_labels: ["delta_e", "delta_r", "delta_a", "thrust_z", "tau_x", "tau_y", "tau_z", "thrust_x"]
  ground_mdp_dt: 0.01
  ground_mdp_control_hold: 1
- ground_mdp_x0: [  -0.0, -0.0, -500.0, 30.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] 
+ ground_mdp_x0: [  -0.0, -0.0, -500.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] 
  ground_mdp_xd: [   0.0, 0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] 
  ground_mdp_X: [
     # (px, py, pz)_[m], (vx, vy, vz)_[m/s], (roll, pitch, yaw)_[rad], (rollrate, pitchrate, yawrate)_[rad/s], time 
-   -2000., -2000., -1000.2, 20.0, -20.0, -20.0, -2.0, -2.0, -1000.0, -50.0, -50.0, -50.0, 0.0,
+   -2000., -2000., -1000.2, -20.0, -20.0, -20.0, -2.0, -2.0, -1000.0, -50.0, -50.0, -50.0, 0.0,
     2000.,  2000., -0.2,  50.0,  20.0,  20.0,  2.0,  2.0,  1000.0,  50.0,  50.0,  50.0, 100000000.0 ]
  ground_mdp_special_obstacle_idxs: []
  ground_mdp_special_obstacle_radius: 0.8
  ground_mdp_obstacles: [ ]
  ground_mdp_U: [ 
-  # \delta_e, \delta_r, \delta_a, tau_{1,2,3,4}, ...
-  -0.5, -0.5, -0.5, 0.0, 0.0, 0.0, -0.0, -0.0, 
-   0.5,  0.5,  0.5, 0.0, 0.0, 0.0,  0.0,  0.0] # rad 
+  # \delta_e, \delta_r, \delta_a, thrust_z, tau_x, tau_y, tau_z, thrust_x
+  -0.5, -0.5, -0.5, -150.0, -5.0, -5.0, -5.0, -0.5, 
+   0.5,  0.5,  0.5,  150.0,  5.0,  5.0,  5.0,  0.5] # rad / N / Nm 
  ground_mdp_gamma: 1.0
  ground_mdp_Qx: [ 500000.0, 500000.0, 500000.0, 0.0, 0.0, 0.0, 1000000.0, 1000000.0, 1000000.0, 0.0, 0.0, 0.0, 0.0] 
  ground_mdp_Qx_equ: [ 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0]
@@ -59,7 +59,7 @@
  wind_duty_cycle: 1.0
  wind_period: 500
  #########
- rollout_mode: "uct" 
+ rollout_mode: "uct2" 
  #########
  dots_expansion_mode: "SpectralSearch"
  dots_initialize_mode: "empty_control" # "thermal_compensation", "closest_equillibrium", "empty_control", "random_trajectory"
