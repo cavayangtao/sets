@@ -36,13 +36,17 @@
  ground_mdp_obstacles: [ ]
  ground_mdp_U: [ 
   # unused, unused, unused, thrust_z, tau_x, tau_y, tau_z, unused
-   0.0,  0.0,  0.0,   0.0, -2.5, -2.5, -1.0,  0.0,
-   0.0,  0.0,  0.0,  40.0,  2.5,  2.5,  1.0,  0.0] # N / Nm
+   0.0,  0.0,  0.0,   0.0, -1.2, -1.2, -0.6,  0.0,
+   0.0,  0.0,  0.0,  50.0,  1.2,  1.2,  0.6,  0.0] # N / Nm
  ground_mdp_gamma: 1.0
- ground_mdp_Qx: [ 120.0, 120.0, 4.0, 20.0, 20.0, 4.0, 2.0, 2.0, 1.0, 3.0, 3.0, 2.0, 0.0] 
- ground_mdp_Qx_equ: [ 0.0, 0.0, 0.0, 4.0, 4.0, 1.0, 1.0, 1.0, 0.5, 4.0, 4.0, 2.0, 0.0]
+ # 水平位置权重继续降低，高度和竖直速度权重继续提高。
+ # 目标是让规划更明确地把“保高度”放在“快到目标”之前。
+ ground_mdp_Qx: [ 45.0, 45.0, 60.0, 18.0, 18.0, 70.0, 24.0, 24.0, 4.0, 14.0, 14.0, 8.0, 0.0] 
+ ground_mdp_Qx_equ: [ 0.0, 0.0, 20.0, 6.0, 6.0, 24.0, 12.0, 12.0, 2.0, 12.0, 12.0, 5.0, 0.0]
  ground_mdp_Qf: [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] 
- ground_mdp_Qu: [ 0.0, 0.0, 0.0, 0.5, 8.0, 8.0, 6.0, 0.0]
+ # 明显降低 thrust_z 代价，让系统愿意在倾斜飞行时主动补推力抵消重力损失；
+ # 扭矩代价保持高位，防止通过大姿态角换取水平速度。
+ ground_mdp_Qu: [ 0.0, 0.0, 0.0, 0.15, 24.0, 24.0, 16.0, 0.0]
  Xs_thermal: [
   [
    -1500, -1500, -750.2, -600.0, -600.0, -600.0, -2.0, -2.0, -10.0, -50.0, -50.0, -50.0, 0.0,
@@ -61,24 +65,30 @@
  rollout_mode: "uct" 
  #########
  dots_expansion_mode: "SpectralSearch"
- dots_initialize_mode: "empty_control" # "thermal_compensation", "closest_equillibrium", "empty_control", "random_trajectory"
- dots_special_actions: ["empty", "greedy"]
+ # 用 stabilization 代替 empty_control：在线性化参考里显式压姿态、压竖直速度并维持初始高度。
+ dots_initialize_mode: "stabilization" # "thermal_compensation", "closest_equillibrium", "empty_control", "random_trajectory"
+ # 先关闭 greedy 特殊动作；它会直接朝目标拉速度，但没有显式的高度保持目标，容易在巡航后段累积掉高。
+ dots_special_actions: ["empty"]
  dots_num_branches: 30
  dots_spectral_branches_mode: "my_idxs"
  my_idxs: [0,1,3,4,6,7,9,10]
  dots_control_mode: "closed_loop_discrete"
  dots_scale_mode: "empty"
  dots_verbose: False
- dots_decision_making_horizon: 160
+ # 再缩短单次执行段，避免在较长区间里持续掉高或持续维持大倾角。
+ dots_decision_making_horizon: 60
  dots_dynamics_horizon: 20
- dots_greedy_rate: 0.35 
+ # 进一步减小朝目标猛冲的趋势，优先保持平稳和高度。
+ dots_greedy_rate: 0.9 
  dots_greedy_min_dist: 0.15 
  # (px, py, pz, vx, vy, vz, roll pitch yaw, rollrate, pitchrate, yawrate, time)
  dots_modal_damping_mode: "damp_displacement_between_systems"
- dots_modal_damping_gains: [0.2, 0.2, 0.8, 0.2, 0.2, 0.8, 0.2, 0.2, 0.5, 0.3, 0.3, 0.4] 
+ # 对 z / vz 重新加大阻尼，抑制巡航过程中缓慢下沉；
+ # 姿态和角速度仍保持高阻尼，限制大幅俯仰/横滚。
+ dots_modal_damping_gains: [0.5, 0.5, 0.82, 0.65, 0.65, 0.82, 0.82, 0.82, 0.7, 0.82, 0.82, 0.72] 
  # dots_rho: 1.0 
  dots_rho: [ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0] 
- dots_greedy_gain: 0.8 
+ dots_greedy_gain: 0.2 
  dots_baseline_mode_on: false
  dots_num_discrete_actions: 4
  #########
