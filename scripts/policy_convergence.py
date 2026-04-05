@@ -30,15 +30,24 @@ def _policy_convergence(args):
     return policy_convergence(*args)
 
 def policy_convergence(process_count, config_dict, seed, N, parallel_on, initial_state=None):
-    config_dict["rollout_mode"] = "uct"
+    # 复制一份配置，避免在多次实验中原地污染传入的字典。
+    config_dict = dict(config_dict)
+    # 切到闭环 uct-mpc，让飞行器按“规划一段、执行一段、再重规划”的方式持续前进。
+    config_dict["rollout_mode"] = "uct-mpc"
     config_dict["uct_N"] = N
     config_dict["uct_wct"] = 10000.0
     config_dict["uct_export_tree_statistics"] = True
     config_dict["uct_heuristic_mode"] = "shuffled"
-    config_dict["uct_max_depth"] = 20
-    config_dict["uct_c"] = 3.0
+    config_dict["uct_max_depth"] = 16
+    config_dict["uct_c"] = 2.0
+    # 关闭 downsample，保证每次 MPC 都执行完整规划段，而不是只前进极少几个点。
+    config_dict["uct_downsample_traj_on"] = False
+    config_dict["uct_mpc_depth"] = 2
     rollout_result = rollout(process_count, config_dict, seed, parallel_on, initial_state=None)
-    total_visit_counts_per_depth, visit_counts_per_depth = extract_from_tree_statistics(rollout_result["uct_trees"][0])
+    if len(rollout_result["uct_trees"]) == 0:
+        return None
+    # uct-mpc 会反复重规划，这里取最后一次重规划对应的树做统计。
+    total_visit_counts_per_depth, visit_counts_per_depth = extract_from_tree_statistics(rollout_result["uct_trees"][-1])
     max_frac_visit_counts_per_depth = []
     for depth in range(len(total_visit_counts_per_depth)):
         if len(visit_counts_per_depth[depth]) > 0:
@@ -156,7 +165,7 @@ def main():
     # Ns = [50, 100, 500, 1000, 5000, 10000, 50000, 100000, 500000, 1000000] # this is as far as I got on 32 gb
     # Ns = [50, 100, 500, 1000, 5000, 10000, 50000, 100000, 500000] 
     # Ns = [50, 100, 500, 1000, 5000, 10000, 50000] 
-    Ns = [500]
+    Ns = [1000]
 
     if only_plot:
         fns = glob.glob("../data/policy_convergence_*.pkl")

@@ -200,7 +200,12 @@ def rollout(process_count, config_dict, seed, parallel_on, initial_state=None):
 
             empty_action = np.zeros((4,1))
             print("k/H: {}/{}, curr_state: {}".format(curr_state[ground_mdp.timestep_idx()], ground_mdp.H(), curr_state))
-            print("ground_mdp.R_verbose(curr_state, empty_action, True):", ground_mdp.R_verbose(curr_state, empty_action, True))
+            try:
+                # 部分 MDP 没有实现 R_verbose，这里仅把它当作调试输出，不能影响主流程。
+                print("ground_mdp.R_verbose(curr_state, empty_action, True):", ground_mdp.R_verbose(curr_state, empty_action, True))
+            except RuntimeError as exc:
+                if "R_verbose not implemented" not in str(exc):
+                    raise
 
             # update environment 
             ground_mdp.clear_obstacles() 

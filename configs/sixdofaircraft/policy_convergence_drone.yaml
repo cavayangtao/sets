@@ -1,49 +1,48 @@
- # aircraft parameters from Beard and McClain 
+ # YAML-only quadrotor configuration tuned for stable runtime behavior
  config_name: "policy_convergence"
  config_path: "../configs/sixdofaircraft/policy_convergence_drone.yaml"
  # modes
  flight_mode: "quadrotor" # ["quadrotor", "fixed_wing", "transition"]
  aero_mode: "empty" # ["empty", "linear", "nonlinear"]
- wind_mode: "thermal" # ["empty", "thermal"]
- reward_mode: "observation" # ["regulation", "observation"]
- target_special_idxs: [0]
- targets: [ [  750.0,  750.0, -350.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], ]
- ground_mdp_H: 45000 # 450 seconds = 7.5 min 
+ wind_mode: "empty" # ["empty", "thermal"]
+ reward_mode: "regulation" # ["regulation", "observation"]
+ target_special_idxs: []
+ targets: [ [  120.0,  120.0, -120.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], ]
+ ground_mdp_H: 12000
  reward_parameters: [0.05, 0.9, 0.00025, 0.0, 0.1, 0.05, 1.0]
  ground_mdp_V_alive: 0.0 # order of depth of tree search 
- # aersonde
- # Table E1
- mass: 11.0 # kg
+ # conservative multirotor rigid-body parameters
+ mass: 2.0 # kg
  gravity: 9.8 # m / s^2
- Ixx: 0.824 # kg m^2
- Ixz: 0.120 # kg m^2
- Iyy: 1.135 # kg m^2
- Izx: 0.120 # kg m^2
- Izz: 1.759 # kg m^2
- ground_mdp_name: "GameSixDOFAircraft"
+ Ixx: 0.03 # kg m^2
+ Ixz: 0.0 # kg m^2
+ Iyy: 0.03 # kg m^2
+ Izx: 0.0 # kg m^2
+ Izz: 0.05 # kg m^2
+ ground_mdp_name: "SixDOFAircraft"
  ground_mdp_verbose: False
  ground_mdp_state_labels: ["p_x", "p_y", "p_z", "v_x", "v_y", "v_z", "phi", "theta", "psi", "p", "q", "r", "time"]
- ground_mdp_control_labels: ["delta_e", "delta_r", "delta_a", "thrust_z", "tau_x", "tau_y", "tau_z", "thrust_x"]
+ ground_mdp_control_labels: ["unused_0", "unused_1", "unused_2", "thrust_z", "tau_x", "tau_y", "tau_z", "unused_7"]
  ground_mdp_dt: 0.01
  ground_mdp_control_hold: 1
- ground_mdp_x0: [  -0.0, -0.0, -500.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] 
- ground_mdp_xd: [   0.0, 0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] 
+ ground_mdp_x0: [  -120.0, -120.0, -120.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] 
+ ground_mdp_xd: [   120.0, 120.0, -120.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] 
  ground_mdp_X: [
     # (px, py, pz)_[m], (vx, vy, vz)_[m/s], (roll, pitch, yaw)_[rad], (rollrate, pitchrate, yawrate)_[rad/s], time 
-   -2000., -2000., -1000.2, -20.0, -20.0, -20.0, -2.0, -2.0, -1000.0, -50.0, -50.0, -50.0, 0.0,
-    2000.,  2000., -0.2,  50.0,  20.0,  20.0,  2.0,  2.0,  1000.0,  50.0,  50.0,  50.0, 100000000.0 ]
+  -250.0, -250.0, -200.0, -12.0, -12.0, -12.0, -1.2, -1.2, -3.2, -8.0, -8.0, -6.0, 0.0,
+   250.0,  250.0,  -1.0,  12.0,  12.0,  12.0,  1.2,  1.2,  3.2,  8.0,  8.0,  6.0, 100000000.0 ]
  ground_mdp_special_obstacle_idxs: []
  ground_mdp_special_obstacle_radius: 0.8
  ground_mdp_obstacles: [ ]
  ground_mdp_U: [ 
-  # \delta_e, \delta_r, \delta_a, thrust_z, tau_x, tau_y, tau_z, thrust_x
-  -0.5, -0.5, -0.5, -150.0, -5.0, -5.0, -5.0, -0.5, 
-   0.5,  0.5,  0.5,  150.0,  5.0,  5.0,  5.0,  0.5] # rad / N / Nm 
+  # unused, unused, unused, thrust_z, tau_x, tau_y, tau_z, unused
+   0.0,  0.0,  0.0,   0.0, -2.5, -2.5, -1.0,  0.0,
+   0.0,  0.0,  0.0,  40.0,  2.5,  2.5,  1.0,  0.0] # N / Nm
  ground_mdp_gamma: 1.0
- ground_mdp_Qx: [ 500000.0, 500000.0, 500000.0, 0.0, 0.0, 0.0, 1000000.0, 1000000.0, 1000000.0, 0.0, 0.0, 0.0, 0.0] 
- ground_mdp_Qx_equ: [ 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0]
+ ground_mdp_Qx: [ 120.0, 120.0, 4.0, 20.0, 20.0, 4.0, 2.0, 2.0, 1.0, 3.0, 3.0, 2.0, 0.0] 
+ ground_mdp_Qx_equ: [ 0.0, 0.0, 0.0, 4.0, 4.0, 1.0, 1.0, 1.0, 0.5, 4.0, 4.0, 2.0, 0.0]
  ground_mdp_Qf: [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] 
- ground_mdp_Qu: [ 0.0, 0.0, 0.0, 1.0, 10000.0, 10000.0, 10000.0, 0.0]
+ ground_mdp_Qu: [ 0.0, 0.0, 0.0, 0.5, 8.0, 8.0, 6.0, 0.0]
  Xs_thermal: [
   [
    -1500, -1500, -750.2, -600.0, -600.0, -600.0, -2.0, -2.0, -10.0, -50.0, -50.0, -50.0, 0.0,
@@ -59,36 +58,36 @@
  wind_duty_cycle: 1.0
  wind_period: 500
  #########
- rollout_mode: "uct2" 
+ rollout_mode: "uct" 
  #########
  dots_expansion_mode: "SpectralSearch"
  dots_initialize_mode: "empty_control" # "thermal_compensation", "closest_equillibrium", "empty_control", "random_trajectory"
- dots_special_actions: ["empty"]
+ dots_special_actions: ["empty", "greedy"]
  dots_num_branches: 30
  dots_spectral_branches_mode: "my_idxs"
- my_idxs: [3,4,5,9,10,11]
+ my_idxs: [0,1,3,4,6,7,9,10]
  dots_control_mode: "closed_loop_discrete"
  dots_scale_mode: "empty"
  dots_verbose: False
- dots_decision_making_horizon: 500
- dots_dynamics_horizon: 25
- dots_greedy_rate: 0.75 
+ dots_decision_making_horizon: 160
+ dots_dynamics_horizon: 20
+ dots_greedy_rate: 0.35 
  dots_greedy_min_dist: 0.15 
  # (px, py, pz, vx, vy, vz, roll pitch yaw, rollrate, pitchrate, yawrate, time)
  dots_modal_damping_mode: "damp_displacement_between_systems"
- dots_modal_damping_gains: [0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75] 
+ dots_modal_damping_gains: [0.2, 0.2, 0.8, 0.2, 0.2, 0.8, 0.2, 0.2, 0.5, 0.3, 0.3, 0.4] 
  # dots_rho: 1.0 
  dots_rho: [ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0] 
- dots_greedy_gain: 0.5 
+ dots_greedy_gain: 0.8 
  dots_baseline_mode_on: false
- dots_num_discrete_actions: 3
+ dots_num_discrete_actions: 4
  #########
  uct_mode : "no_cbds"
  uct_downsample_traj_on : True
- uct_N : 100000
- uct_max_depth : 10
+ uct_N : 20000
+ uct_max_depth : 12
  uct_mpc_depth : 2
- uct_c : 5.0
+ uct_c : 3.0
  uct_dt : 0.01 # sec
  uct_wct : 1200.0 # sec
  uct_export_topology : False
@@ -110,9 +109,9 @@
  b: 2.90 # m, wing span 
  c: 0.19 # m, length of the mean aerodynamic chord 
  # observation model 
- obs_cone_length: 150.0 # m 
- obs_cone_angle: 0.75 # pi/8, check units
- obs_min_speed: 2.0 # scale drag force 
+ obs_cone_length: 80.0 # unused for regulation mode
+ obs_cone_angle: 0.75 # unused for regulation mode
+ obs_min_speed: 0.0 # unused for regulation mode
  # Table E2
  C_D_0: 0.043
  C_D_alpha: 0.03
