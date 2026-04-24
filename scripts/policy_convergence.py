@@ -146,9 +146,6 @@ def plot_policy_convergence_results(results):
     [item.set_fontsize(8) for item in ax.get_zticklabels()]
     ax.zaxis.label.set_rotation(180)
 
-
-
-
 def main():
 
     num_seeds = 1
