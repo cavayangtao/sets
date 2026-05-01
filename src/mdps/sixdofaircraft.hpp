@@ -60,6 +60,9 @@ class SixDOFAircraft : public MDP {
                 m_flight_mode = 1;
             } else if (flight_mode == "transition") { // u = [delta_e, delta_r, delta_a, thrust_z, tau_x, tau_y, tau_z, thrust_x]
                 m_flight_mode = 2;
+            } else if (flight_mode == "quadrotor_vbody_yaw") { // u = [v_bx, v_by, v_bz, yaw_rate]
+                // 四旋翼外环速度指令模式：规划器给速度/偏航角速度，动力学内再映射到推力/力矩。
+                m_flight_mode = 3;
             } else { 
                 throw std::logic_error("flight mode not recognized");
             }
@@ -128,6 +131,25 @@ class SixDOFAircraft : public MDP {
             m_Izz = config["Izz"].as<double>();
             m_control_hold = config["ground_mdp_control_hold"].as<int>();
             m_V_alive = config["ground_mdp_V_alive"].as<double>();
+
+            std::vector<double> inner_U_yml;
+            if (config["ground_mdp_inner_U"]) {
+                inner_U_yml = config["ground_mdp_inner_U"].as<std::vector<double>>();
+                assert(inner_U_yml.size() == 8);
+            } else {
+                inner_U_yml = {0.0, -1.2, -1.2, -0.6, 50.0, 1.2, 1.2, 0.6};
+            }
+            // 内环执行器的硬约束：用于对映射后的 thrust/tau 进行限幅。
+            m_inner_U = Eigen::Map<Eigen::MatrixXd, Eigen::Unaligned>(inner_U_yml.data(), 4, 2);
+
+            // 外环速度指令映射增益参数（均可由 YAML 覆盖）。
+            m_vbody_x_gain = config["vbody_x_gain"] ? config["vbody_x_gain"].as<double>() : 0.08;
+            m_vbody_y_gain = config["vbody_y_gain"] ? config["vbody_y_gain"].as<double>() : 0.08;
+            m_vbody_z_gain = config["vbody_z_gain"] ? config["vbody_z_gain"].as<double>() : 6.0;
+            m_yaw_rate_gain = config["yaw_rate_gain"] ? config["yaw_rate_gain"].as<double>() : 0.6;
+            m_attitude_kp = config["attitude_kp"] ? config["attitude_kp"].as<double>() : 1.4;
+            m_attitude_kd = config["attitude_kd"] ? config["attitude_kd"].as<double>() : 0.45;
+            m_max_tilt_command = config["max_tilt_command"] ? config["max_tilt_command"].as<double>() : 0.4;
 
             m_wind_period = config["wind_period"].as<int>();
             m_wind_duty_cycle = config["wind_duty_cycle"].as<double>();
@@ -272,6 +294,12 @@ class SixDOFAircraft : public MDP {
                 m_action_dim = 8;
                 m_Qu = Qu;
                 m_U = U; 
+            } else if (m_flight_mode == 3) {
+                // u = [v_bx, v_by, v_bz, yaw_rate]
+                // 代价与动作约束都使用外环 4 维指令空间。
+                m_action_dim = 4;
+                m_Qu = Qu.block(0,0,4,4).eval();
+                m_U = U.block(0,0,4,2).eval();
             }
 
             // std::cout << "m_U" << std::endl; 
@@ -374,6 +402,33 @@ class SixDOFAircraft : public MDP {
             return empty_u; 
         }
 
+        Eigen::Matrix<double,4,1> map_vbody_command_to_quadrotor_action(const Eigen::VectorXd & state,
+                                                                         const Eigen::VectorXd & action) {
+            // 外环误差：期望机体系速度/偏航角速度 - 当前值。
+            double vx_error = action(0,0) - state(3,0);
+            double vy_error = action(1,0) - state(4,0);
+            double vz_error = action(2,0) - state(5,0);
+            double yaw_rate_error = action(3,0) - state(11,0);
+
+            // 横向速度误差先转成姿态指令，再做倾角限幅。
+            double theta_cmd = std::max(std::min(-m_vbody_x_gain * vx_error, m_max_tilt_command), -m_max_tilt_command);
+            double phi_cmd = std::max(std::min(m_vbody_y_gain * vy_error, m_max_tilt_command), -m_max_tilt_command);
+
+            Eigen::Matrix<double,4,1> inner_action;
+            // 纵向通道：重力补偿 + 速度误差校正。
+            inner_action(0,0) = m_mass * m_gravity - m_vbody_z_gain * vz_error;
+            // 姿态 PD：把姿态误差和角速度阻尼映射到力矩。
+            inner_action(1,0) = m_attitude_kp * (phi_cmd - state(6,0)) - m_attitude_kd * state(9,0);
+            inner_action(2,0) = m_attitude_kp * (theta_cmd - state(7,0)) - m_attitude_kd * state(10,0);
+            inner_action(3,0) = m_yaw_rate_gain * yaw_rate_error;
+
+            // 最终施加内环执行器限幅，保证动作可实现。
+            for (int ii=0; ii<4; ii++) {
+                inner_action(ii,0) = std::max(std::min(inner_action(ii,0), m_inner_U(ii,1)), m_inner_U(ii,0));
+            }
+            return inner_action;
+        }
+
         // unique to SixDOFAircraft
         Eigen::VectorXd F(const Eigen::VectorXd & state, 
                           const Eigen::VectorXd & action) override {
@@ -408,6 +463,7 @@ class SixDOFAircraft : public MDP {
             double tau_y = 0.0;
             double tau_z = 0.0;
             double thrust_x = 0.0;
+            Eigen::VectorXd applied_action = action;
             if (m_flight_mode == 0) {
                 delta_e = action(0,0);
                 delta_r = action(1,0);
@@ -426,6 +482,13 @@ class SixDOFAircraft : public MDP {
                 tau_y = action(5,0);
                 tau_z = action(6,0);
                 thrust_x = action(7,0);
+            } else if (m_flight_mode == 3) {
+                // 在动力学积分前，将外环速度指令实时映射到四旋翼内环动作。
+                applied_action = map_vbody_command_to_quadrotor_action(state, action);
+                thrust_z = applied_action(0,0);
+                tau_x = applied_action(1,0);
+                tau_y = applied_action(2,0);
+                tau_z = applied_action(3,0);
             } 
 
             // get rotation matrices 
@@ -445,7 +508,7 @@ class SixDOFAircraft : public MDP {
             moment_th << tau_x, tau_y, tau_z;
 
             // - aero
-            Eigen::Matrix<double,6,1> aero = aero_model(state, action);
+            Eigen::Matrix<double,6,1> aero = aero_model(state, applied_action);
             
             // wind hack - thermal enters as forces (and moments)
             if (m_wind_mode == 1) {
@@ -535,6 +598,8 @@ class SixDOFAircraft : public MDP {
                 std::cout << "state: state(11,0) : " << state(11,0)  << std::endl;
                 std::cout << "action: delta_r: " << delta_r << std::endl;
                 std::cout << "action: delta_a: " << delta_a << std::endl;
+                std::cout << "command: "; print_v(action);
+                std::cout << "mapped_action: "; print_v(applied_action);
                 std::cout << "action: thrust_z: " << thrust_z << std::endl;
                 std::cout << "action: tau_x: " << tau_x << std::endl;
                 std::cout << "action: tau_y: " << tau_y << std::endl;
@@ -1146,6 +1211,14 @@ class SixDOFAircraft : public MDP {
         double m_Izx;
         double m_Ixz;
         double m_Iyy;
+        Eigen::MatrixXd m_inner_U;
+        double m_vbody_x_gain;
+        double m_vbody_y_gain;
+        double m_vbody_z_gain;
+        double m_yaw_rate_gain;
+        double m_attitude_kp;
+        double m_attitude_kd;
+        double m_max_tilt_command;
         // thermals 
         std::vector<Eigen::MatrixXd> m_Xs_thermal;
         std::vector<Eigen::VectorXd> m_Vs_thermal;

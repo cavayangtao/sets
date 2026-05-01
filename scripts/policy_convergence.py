@@ -36,10 +36,10 @@ def policy_convergence(process_count, config_dict, seed, N, parallel_on, initial
     config_dict["rollout_mode"] = "uct-mpc"
     config_dict["uct_N"] = N
     config_dict["uct_wct"] = 10000.0
-    config_dict["uct_export_tree_statistics"] = True
+    config_dict["uct_export_tree_statistics"] = False
     config_dict["uct_heuristic_mode"] = "shuffled"
     config_dict["uct_max_depth"] = 16
-    config_dict["uct_c"] = 2.0
+    config_dict["uct_c"] = 2.5
     # 关闭 downsample，保证每次 MPC 都执行完整规划段，而不是只前进极少几个点。
     config_dict["uct_downsample_traj_on"] = False
     config_dict["uct_mpc_depth"] = 2
@@ -154,7 +154,9 @@ def main():
 
     # config_path = util.get_config_path("fixed_wing")
     # config_path = util.get_config_path("value_convergence")
-    config_path = util.get_config_path("policy_convergence_drone")
+    # config_path = util.get_config_path("policy_convergence")
+    # config_path = util.get_config_path("policy_convergence_drone")
+    config_path = util.get_config_path("policy_convergence_drone_vbody_yaw")
 
     # Ns = [100, 1000, 10000]
     # Ns = [50, 100, 500, 1000, 5000, 10000, 50000, 100000, 500000, 1000000, 5000000, 10000000] # this is as far as I got on 64
