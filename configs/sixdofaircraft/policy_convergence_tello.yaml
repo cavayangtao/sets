@@ -1,0 +1,181 @@
+ # YAML-only quadrotor vbody-yaw configuration for DJI Tello Talent scale
+ config_name: "policy_convergence_tello"
+ config_path: "../configs/sixdofaircraft/policy_convergence_tello.yaml"
+ # modes
+ flight_mode: "quadrotor_vbody_yaw"
+ aero_mode: "empty"
+ wind_mode: "empty"
+ reward_mode: "regulation"
+ target_special_idxs: []
+ targets: [ [  20.0,  0.0, -12.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], ]
+ ground_mdp_H: 2000
+ reward_parameters: [0.05, 0.9, 0.00025, 0.0, 0.1, 0.05, 1.0]
+ ground_mdp_V_alive: 0.0
+ # Tello Talent scale rigid-body parameters
+ mass: 2.0
+ gravity: 9.8
+ Ixx: 0.03
+ Ixz: 0.0
+ Iyy: 0.03
+ Izx: 0.0
+ Izz: 0.05
+ ground_mdp_name: "SixDOFAircraft"
+ ground_mdp_verbose: False
+ ground_mdp_state_labels: ["p_x", "p_y", "p_z", "v_x", "v_y", "v_z", "phi", "theta", "psi", "p", "q", "r", "time"]
+ ground_mdp_control_labels: ["v_bx_cmd", "v_by_cmd", "v_bz_cmd", "yaw_rate_cmd", "unused_4", "unused_5", "unused_6", "unused_7"]
+ ground_mdp_dt: 0.01
+ ground_mdp_control_hold: 10
+ ground_mdp_x0: [  -20.0, 0.0, -12.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+ ground_mdp_xd: [   20.0, 0.0, -12.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+ ground_mdp_X: [
+ -250.0, -250.0, -200.0, -25.0, -25.0, -25.0, -1.2, -1.2, -3.2, -8.0, -8.0, -6.0, 0.0,
+  250.0,  250.0,  -1.0,  25.0,  25.0,  25.0,  1.2,  1.2,  3.2,  8.0,  8.0,  6.0, 100000000.0 ]
+ ground_mdp_special_obstacle_idxs: []
+ ground_mdp_special_obstacle_radius: 0.8
+ # Two obstacles on the line segment from start (-20,0,-12) to goal (20,0,-12)
+ ground_mdp_obstacles: [
+  [
+   -9.0, -1.2, -14.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+   -7.0,  1.2, -10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 100000000.0
+  ],
+  [
+    7.0, -1.2, -14.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    9.0,  1.2, -10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 100000000.0
+  ]
+ ]
+ ground_mdp_U: [
+ -20.0, -20.0, -10.0, -2.5, 0.0, 0.0, 0.0, 0.0,
+  20.0,  20.0,  10.0,  2.5, 0.0, 0.0, 0.0, 0.0]
+ ground_mdp_inner_U: [
+  0.0, -3.0, -3.0, -0.6,
+ 50.0,  3.0,  3.0,  0.6]
+ ground_mdp_gamma: 1.0
+ ground_mdp_Qx: [ 30.0, 30.0, 45.0, 0.5, 0.5, 1.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.0]
+ ground_mdp_Qx_equ: [ 0.0, 0.0, 20.0, 6.0, 6.0, 24.0, 12.0, 12.0, 2.0, 12.0, 12.0, 5.0, 0.0]
+ ground_mdp_Qf: [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+ ground_mdp_Qu: [ 0.03, 0.03, 0.05, 0.02, 0.0, 0.0, 0.0, 0.0]
+ vbody_x_gain: 0.2
+ vbody_y_gain: 0.2
+ vbody_z_gain: 10.0
+ yaw_rate_gain: 0.9
+ attitude_kp: 2.4
+ attitude_kd: 0.7
+ max_tilt_command: 1.2
+ Xs_thermal: [
+  [
+   -1500, -1500, -750.2, -600.0, -600.0, -600.0, -2.0, -2.0, -10.0, -50.0, -50.0, -50.0, 0.0,
+   -750, -750, -0.2,  600.0,  600.0,  600.0,  2.0,  2.0,  10.0,  50.0,  50.0,  50.0, 100000000.0
+  ]
+ ]
+ Vs_thermal: [
+  [
+    0.0, 0.0, -100.0, 0.0, 0.0, 0.0
+  ]
+ ]
+ wind_duty_cycle: 1.0
+ wind_period: 500
+ rollout_mode: "uct"
+ dots_expansion_mode: "SpectralSearch"
+ dots_initialize_mode: "stabilization"
+ dots_special_actions: ["empty", "greedy"]
+ dots_num_branches: 30
+ dots_spectral_branches_mode: "generalized_velocities"
+ my_idxs: [0,1,3,4,6,7,9,10]
+ dots_control_mode: "closed_loop_discrete"
+ dots_scale_mode: "displacement_clip"
+ dots_modal_damping_mode: "damp_displacement_between_systems"
+ dots_modal_damping_gains: [0.4, 0.4, 0.7, 0.4, 0.4, 0.7, 0.75, 0.75, 0.65, 0.75, 0.75, 0.68]
+ dots_rho: [ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+ dots_greedy_gain: 2.0
+ dots_greedy_rate: 0.8
+ dots_greedy_min_dist: 0.15
+ dots_baseline_mode_on: false
+ dots_num_discrete_actions: 4
+ dots_verbose: False
+ dots_decision_making_horizon: 20
+ dots_dynamics_horizon: 5
+ uct_mode : "no_cbds"
+ uct_downsample_traj_on : True
+ uct_N : 20000
+ uct_max_depth : 12
+ uct_mpc_depth : 2
+ uct_c : 3.0
+ uct_dt : 0.01
+ uct_wct : 1200.0
+ uct_export_topology : False
+ uct_export_node_states : False
+ uct_export_trajs : True
+ uct_export_cbdsbds : False
+ uct_export_tree_statistics : False
+ uct_heuristic_mode: "shuffled"
+ uct_tree_exploration: "uct"
+ uct_verbose : False
+ neural_thermal_scale: 0.7
+ max_alpha: 0.33
+ max_beta:  0.33
+ rho: 1.268
+ S: 0.55
+ b: 2.90
+ c: 0.19
+ obs_cone_length: 80.0
+ obs_cone_angle: 0.75
+ obs_min_speed: 0.0
+ C_D_0: 0.043
+ C_D_alpha: 0.03
+ C_D_q: 0.0
+ C_D_delta_e: 0.0135
+ C_L_0: 0.23
+ C_L_alpha: 5.61
+ C_L_q: 7.95
+ C_L_delta_e: 0.13
+ C_M_0: 0.0135
+ C_M_alpha: -2.74
+ C_M_q: -38.21
+ C_M_delta_e: -0.99
+ C_Y_0: 0.0
+ C_Y_beta: -0.83
+ C_Y_p: 0.0
+ C_Y_r: 0.0
+ C_Y_delta_a: 0.075
+ C_Y_delta_r: 0.190
+ C_l_0: 0.0
+ C_l_beta: -0.130
+ C_l_p: -0.51
+ C_l_r: 0.25
+ C_l_delta_a: 0.17
+ C_l_delta_r: 0.0024
+ C_n_0: 0.0
+ C_n_beta: 0.073
+ C_n_p: -0.069
+ C_n_r: -0.095
+ C_n_delta_a: -0.011
+ C_n_delta_r: -0.069
+ alpha_0: 0.47
+ M: 50.0
+ C_D_p: 0.25
+ oswald_eff: 0.9
+ alpha_takeoff: 0.47
+ beta_takeoff: 0.26
+ speed_takeoff: 5.0
+ aero_scale : [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+ aero_clip : [
+  -1000000.0, -1000000.0, -1000000.0, -1000000.0, -1000000.0, -1000000.0,
+   1000000.0,  1000000.0,  1000000.0,  1000000.0,  1000000.0,  1000000.0]
+ ud_mcts_num_points_per_dimension: 3
+ plot_max_num_trees: 20
+ plot_max_num_traj_per_tree: 1000
+ plot_max_num_points_per_traj: 10
+ model_device: "cpu"
+ model_overfit_mode: False
+ model_training_mode: "None"
+ model_lipshitz_const: 0.005
+ model_train_test_ratio: 0.8
+ model_batch_size: 64
+ model_initial_learning_rate: 0.0001
+ model_num_epochs: 200
+ model_hidden_dim: 8
+ model_input_dim: 17
+ model_output_dim: 6
+ model_num_hidden_layers: 2
+ model_activation: "relu"
+ model_path: "../hardware/b2_neuralaero_model.pt"

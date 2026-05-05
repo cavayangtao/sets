@@ -6,6 +6,7 @@ import tqdm
 import glob
 import re
 import os
+import sys
 import pickle 
 import numpy as np 
 import scipy 
@@ -92,7 +93,10 @@ def load_pickle(fn):
         with open(fn, 'rb') as h:
             obj = pickle.load(h)
         return obj
-    except:
+    except Exception:
+        # Only Python < 3.8 may need pickle5 for protocol 5 support.
+        if sys.version_info >= (3, 8):
+            raise
         import pickle5
         with open(fn, 'rb') as h:
             obj = pickle5.load(h)

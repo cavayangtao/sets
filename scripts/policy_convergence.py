@@ -156,7 +156,14 @@ def main():
     # config_path = util.get_config_path("value_convergence")
     # config_path = util.get_config_path("policy_convergence")
     # config_path = util.get_config_path("policy_convergence_drone")
-    config_path = util.get_config_path("policy_convergence_drone_vbody_yaw")
+    config_path = util.get_config_path("policy_convergence_tello_stage3")
+    # tello_stage = os.environ.get("TELLO_STAGE", "stage1").strip().lower()
+    # tello_config_map = {
+    #     "stage1": "policy_convergence_tello_stage1",
+    #     "stage2": "policy_convergence_tello_stage2",
+    #     "stage3": "policy_convergence_tello_stage3",
+    # }
+    # config_path = util.get_config_path(tello_config_map.get(tello_stage, "policy_convergence_tello_stage1"))
 
     # Ns = [100, 1000, 10000]
     # Ns = [50, 100, 500, 1000, 5000, 10000, 50000, 100000, 500000, 1000000, 5000000, 10000000] # this is as far as I got on 64
