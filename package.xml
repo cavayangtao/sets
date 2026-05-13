@@ -1,0 +1,14 @@
+<package format="2">
+  <name>sets</name>
+  <version>0.0.0</version>
+  <description>SETS planner ROS wrapper for Tello online control</description>
+  <maintainer email="user@example.com">user</maintainer>
+  <license>TODO</license>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <export>
+    <build_type>cmake</build_type>
+  </export>
+</package>

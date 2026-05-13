@@ -1,0 +1,59 @@
+<launch>
+  <!-- Tello Planner ROS Node: MoCap → UCT-MPC → cmd_vel -->
+
+  <arg name="config_name" default="policy_convergence_tello_stage3"/>
+  <arg name="uct_N"       default="500"/>
+  <arg name="planner_rate" default="2.0"/>
+  <arg name="cmd_pub_rate" default="30.0"/>
+
+  <node name="tello_planner" pkg="sets" type="tello_planner_node.py"
+        output="screen" respawn="false">
+
+    <!-- planner config -->
+    <param name="config_name"   value="$(arg config_name)"/>
+    <param name="uct_N"         value="$(arg uct_N)"/>
+    <param name="uct_max_depth" value="12"/>
+    <param name="uct_c"         value="3.0"/>
+    <param name="uct_wct"       value="1200.0"/>
+    <param name="uct_dt"        value="0.01"/>
+
+    <!-- rates -->
+    <param name="planner_rate" value="$(arg planner_rate)"/>
+    <param name="cmd_pub_rate" value="$(arg cmd_pub_rate)"/>
+
+    <!-- topics -->
+    <param name="pose_topic"    value="/mocap/pose"/>
+    <param name="cmd_vel_topic" value="/cmd_vel"/>
+    <param name="status_topic"  value="/tello_planner/status"/>
+
+    <!-- target: initial goal, change at runtime via:
+         rosparam set /tello_planner/target_pos "[x,y,z,...]"
+         rosservice call /tello_planner/update_target -->
+    <param name="target_pos" value="[20.0, 0.0, -12.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]"/>
+
+    <!-- safety -->
+    <param name="auto_arm"     value="true"/>
+    <param name="pose_timeout" value="2.0"/>  <!-- > planner latency (~0.8s @ N=500) -->
+    <param name="max_cmd_hold" value="3.0"/>
+    <param name="clip_cmd"     value="true"/>
+
+    <!-- command limits default from YAML ground_mdp_U.
+         Uncomment below to override:
+    <param name="vx_max"       value="7.0"/>
+    <param name="vy_max"       value="7.0"/>
+    <param name="vz_max"       value="2.5"/>
+    <param name="yaw_rate_max" value="1.8"/>
+    -->
+
+    <!-- frame transform: mocap ENU → planner NED (z-down) -->
+    <param name="mocap_frame"             value="ENU"/>
+    <param name="mocap_to_planner_rz_deg" value="0.0"/>
+    <param name="mocap_to_planner_scale_xyz" value="[1.0, 1.0, 1.0]"/>
+
+    <!-- pose message type -->
+    <param name="pose_msg_type" value="PoseStamped"/>
+
+    <!-- seed -->
+    <param name="seed" value="0"/>
+  </node>
+</launch>
