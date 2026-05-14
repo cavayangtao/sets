@@ -5,4 +5,4 @@
 .DS_Store
 
 data/*
-!data/.gitkeep
+!data/rollout_result_policy_convergence_tello_stage3_0.pkl
