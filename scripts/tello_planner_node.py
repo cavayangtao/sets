@@ -17,6 +17,7 @@ import sys
 import os
 import time
 import math
+import ast
 import threading
 import traceback
 from enum import Enum
@@ -101,6 +102,51 @@ def transform_pose(px, py, pz, roll, pitch, yaw, frame_config):
     return px, py, pz, roll, pitch, yaw
 
 
+def transform_velocity(vx, vy, vz, frame_config):
+    """
+    Apply the same frame convention used for position to world velocity.
+
+    This keeps [p_x, p_y, p_z] and [v_x, v_y, v_z] in the same planner frame.
+    """
+    scale = np.array(frame_config.get("mocap_to_planner_scale_xyz", [1.0, 1.0, 1.0]))
+    rz_deg = frame_config.get("mocap_to_planner_rz_deg", 0.0)
+
+    # scale
+    vx, vy, vz = vx * scale[0], vy * scale[1], vz * scale[2]
+
+    # rotate around Z
+    if abs(rz_deg) > 1e-9:
+        rad = math.radians(rz_deg)
+        c, s = math.cos(rad), math.sin(rad)
+        vx, vy = c * vx - s * vy, s * vx + c * vy
+
+    # frame hand-ness
+    mocap_frame = frame_config.get("mocap_frame", "ENU")
+    if mocap_frame == "ENU":
+        vz = -vz
+    elif mocap_frame == "NED_ZY":
+        vx, vy, vz = vx, vz, vy
+    # "NED" -> pass through
+
+    return vx, vy, vz
+
+
+def extract_cmd_limits_from_U(ground_mdp_U, default=(7.0, 7.0, 2.5, 1.8)):
+    """Extract positive cmd limits [vx, vy, vz, yaw_rate] from YAML ground_mdp_U."""
+    flat = np.array(ground_mdp_U, dtype=np.float64).reshape(-1)
+    if flat.size < 8:
+        return np.array(default, dtype=np.float64)
+
+    # Expected YAML layout: [u_min(8), u_max(8)]
+    U = flat.reshape(2, -1)
+    if U.shape[1] < 4:
+        return np.array(default, dtype=np.float64)
+
+    u_min = U[0, :4]
+    u_max = U[1, :4]
+    return np.maximum(np.abs(u_min), np.abs(u_max))
+
+
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  Planner Node                                                               ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -181,9 +227,14 @@ class TelloPlannerNode:
         self._pose_timeout = rospy.get_param("~pose_timeout", 2.0)       # seconds; should be > plan latency
         self._max_cmd_hold = rospy.get_param("~max_cmd_hold", 3.0)       # seconds; stop if no new plan
         self._clip_cmd = rospy.get_param("~clip_cmd", True)
+        # Keep legacy behavior by default: use finite-difference velocity in planner state.
+        # This can still be disabled via ROS param when needed.
+        self._use_estimated_velocity = rospy.get_param("~use_estimated_velocity", True)
+        # Filtered differentiation for pose-only velocity estimation.
+        self._vel_lpf_tau = rospy.get_param("~vel_lpf_tau", 0.15)         # seconds; <=0 disables filtering
+        self._vel_diff_max_dt = rospy.get_param("~vel_diff_max_dt", 0.5)  # ignore stale deltas
         # cmd_vel limits: read from YAML ground_mdp_U as source of truth; ROS param can override
-        _U = np.array(self._config.get("ground_mdp_U", [])).reshape(2, -1, order="F")
-        _default_lim = _U[1, :4] if _U.size >= 8 else [7.0, 7.0, 2.5, 1.8]
+        _default_lim = extract_cmd_limits_from_U(self._config.get("ground_mdp_U", []))
         self._vx_max = rospy.get_param("~vx_max", float(_default_lim[0]))
         self._vy_max = rospy.get_param("~vy_max", float(_default_lim[1]))
         self._vz_max = rospy.get_param("~vz_max", float(_default_lim[2]))
@@ -204,6 +255,15 @@ class TelloPlannerNode:
         self._target_pos = rospy.get_param("~target_pos",
             self._config.get("ground_mdp_xd", [20.0, 0.0, -12.0, 0.0, 0.0, 0.0,
                                                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
+        if isinstance(self._target_pos, str):
+            try:
+                parsed = ast.literal_eval(self._target_pos)
+                if isinstance(parsed, (list, tuple, np.ndarray)):
+                    self._target_pos = list(parsed)
+                else:
+                    raise ValueError("target_pos string did not parse to sequence")
+            except Exception as e:
+                rospy.logwarn("Failed to parse string target_pos, keep raw value: %s", e)
 
         # seed
         self._seed = rospy.get_param("~seed", 0)
@@ -274,6 +334,21 @@ class TelloPlannerNode:
         for obs in obstacles:
             self._ground_mdp.add_obstacle(obs)
 
+        # apply startup target from ROS param/YAML before first planning cycle
+        try:
+            xd = np.array(self._target_pos, dtype=np.float64).reshape(-1, 1)
+            if xd.shape[0] != self._ground_mdp.state_dim():
+                raise ValueError(
+                    f"target_pos length {xd.shape[0]} != state_dim {self._ground_mdp.state_dim()}"
+                )
+            self._ground_mdp.set_xd(xd)
+        except Exception as e:
+            rospy.logwarn("Invalid startup target_pos, fallback to YAML ground_mdp_xd: %s", e)
+            fallback = np.array(config.get("ground_mdp_xd", []), dtype=np.float64).reshape(-1, 1)
+            if fallback.shape[0] == self._ground_mdp.state_dim():
+                self._ground_mdp.set_xd(fallback)
+                self._target_pos = fallback.reshape(-1).tolist()
+
         rospy.loginfo("Planner objects created: MDP state_dim=%d, N=%d, obstacles=%d",
                       self._ground_mdp.state_dim(), self._uct_N, len(obstacles))
 
@@ -321,8 +396,22 @@ class TelloPlannerNode:
             pos = np.array(self._mocap_pos)
             if self._prev_pos is not None and self._prev_stamp is not None:
                 dt = now - self._prev_stamp
-                if dt > 1e-6:
-                    self._est_vel = (pos - self._prev_pos) / dt
+                if 1e-6 < dt <= self._vel_diff_max_dt:
+                    raw_vel = (pos - self._prev_pos) / dt
+                    if self._vel_lpf_tau > 1e-9:
+                        # First-order LPF: v = v + alpha * (raw - v), alpha in (0, 1].
+                        alpha = float(np.clip(dt / (self._vel_lpf_tau + dt), 0.0, 1.0))
+                        self._est_vel = self._est_vel + alpha * (raw_vel - self._est_vel)
+                    else:
+                        self._est_vel = raw_vel
+                elif dt > self._vel_diff_max_dt:
+                    rospy.logwarn_throttle(
+                        5.0,
+                        "Pose dt too large for velocity diff (dt=%.3fs, max=%.3fs); reset est vel",
+                        dt,
+                        self._vel_diff_max_dt,
+                    )
+                    self._est_vel = np.zeros(3)
             self._prev_pos = pos
             self._prev_stamp = now
 
@@ -361,14 +450,19 @@ class TelloPlannerNode:
             r, p, y = quaternion_to_rpy(quat)
             px, py, pz, roll, pitch, yaw = transform_pose(
                 pos[0], pos[1], pos[2], r, p, y, self._frame_config)
+            if self._use_estimated_velocity:
+                vx, vy, vz = transform_velocity(
+                    est_vel[0], est_vel[1], est_vel[2], self._frame_config)
+            else:
+                vx, vy, vz = 0.0, 0.0, 0.0
 
             state = np.zeros(self._ground_mdp.state_dim(), dtype=np.float64)
             state[0]  = px
             state[1]  = py
             state[2]  = pz
-            state[3]  = est_vel[0]
-            state[4]  = est_vel[1]
-            state[5]  = est_vel[2]
+            state[3]  = vx
+            state[4]  = vy
+            state[5]  = vz
             state[6]  = roll
             state[7]  = pitch
             state[8]  = yaw
@@ -390,6 +484,11 @@ class TelloPlannerNode:
                 self._plan_count += 1
 
                 if result.success:
+                    if self._state not in (State.READY, State.RUNNING):
+                        self._plan_success = False
+                        rospy.logwarn("Plan finished but state is %s; dropping command",
+                                      self._state.value)
+                        return
                     us = np.array(result.planned_traj.us)
                     self._cmd = self._saturate_command(us[0, :])
                     self._cmd_stamp = rospy.Time.now()

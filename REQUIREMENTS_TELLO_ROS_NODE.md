@@ -1,157 +1,142 @@
-# Tello + MoCap Online Control Requirement Analysis (ROS Node)
+# Tello + MoCap Online Control Requirements (ROS Node)
 
 ## 1. Purpose
-Analyze whether the current planning entry script can be transformed into a ROS node for real Tello flight with:
-- Pose input from motion capture.
-- Velocity command output through `cmd_vel` (`geometry_msgs/Twist`).
+Define the requirement baseline aligned with the **current** ROS1 implementation in `scripts/tello_planner_node.py`.
 
-This document is analysis-only. No code rewrite is included.
+System objective:
+1. Subscribe to MoCap pose input.
+2. Run UCT-MPC online planning.
+3. Publish bounded velocity commands via `cmd_vel` (`geometry_msgs/Twist`).
 
-## 2. Conclusion (Feasibility)
-The conversion is feasible, but not as a direct drop-in of the current offline script.
+## 2. Scope and Status
+This document describes implemented requirements and current operational constraints.
 
-Reason:
-1. Current flow in [scripts/policy_convergence.py](scripts/policy_convergence.py) is experiment-oriented batch execution and plotting, not a continuous online ROS loop.
-2. Core planner execution through [scripts/rollout.py](scripts/rollout.py) is simulation-oriented and blocking.
-3. Real flight requires asynchronous ROS I/O, watchdog, command rate holding, and safety state machine.
+Implemented runtime architecture:
+1. Single ROS node with asynchronous subscriber/publisher/timers.
+2. Dual-rate scheduling (planner timer + command publish timer).
+3. Safety state machine and watchdog.
+4. Runtime services: `~arm`, `~estop`, `~update_target`.
 
-Recommendation:
-- Keep C++ planner bindings.
-- Add a dedicated ROS runtime wrapper node (new script/module).
-- Separate planner update rate from command publish rate.
+## 3. Assumptions
+1. ROS distribution is ROS1 (`rospy`).
+2. Tello driver consumes `cmd_vel` as body-frame velocity and yaw rate command.
+3. Pose input is `geometry_msgs/PoseStamped`.
+4. MoCap stream is sufficiently frequent for stable finite-difference velocity estimation.
 
-## 3. Current-State Analysis
-### 3.1 What exists today
-1. Planner stack based on UCT-MPC with pybind bindings from `build.bindings`.
-2. Stage config with control semantics already aligned to velocity command structure:
-   - [configs/sixdofaircraft/policy_convergence_tello_stage3.yaml](configs/sixdofaircraft/policy_convergence_tello_stage3.yaml)
-   - `ground_mdp_control_labels = [v_bx_cmd, v_by_cmd, v_bz_cmd, yaw_rate_cmd, ...]`
-3. Trajectory export and plotting pipeline for offline analysis.
-
-### 3.2 Gaps vs ROS online control
-1. No ROS subscriber/publisher in current codebase.
-2. No online state estimator bridge from MoCap pose to planner state vector.
-3. No explicit frame convention contract (world/body, ENU/NED, yaw sign).
-4. No runtime safety guards (timeout hover/stop/land).
-5. Planner loop is blocking; command output requires deterministic periodic publication.
-
-## 4. Assumptions
-1. Tello ROS driver accepts `cmd_vel` as body-frame linear velocity + yaw rate.
-2. MoCap provides at least position + orientation at stable rate (>= 30 Hz preferred).
-3. ROS distribution can be ROS1 or ROS2; exact target must be fixed before implementation.
-
-## 5. Functional Requirements
+## 4. Functional Requirements
 ### FR-1 Node Runtime
-The system shall run as one ROS node process (or coordinated two-node architecture) that continuously:
-1. Subscribes to MoCap pose topic.
-2. Maintains planner state.
-3. Publishes `cmd_vel` at fixed control rate.
+The node shall continuously:
+1. Subscribe to MoCap pose topic.
+2. Maintain planner state.
+3. Publish `cmd_vel` at fixed rate.
 
 ### FR-2 Input Interface
-The node shall subscribe to pose topic with configurable message type and topic name.
-Mandatory extracted fields:
-1. Position (x, y, z).
-2. Orientation (quaternion -> yaw at minimum).
-Optional:
-1. Velocity from MoCap.
-2. If missing, derive velocity by filtered differentiation.
+The node shall support:
+1. Configurable input pose topic name.
+2. Pose message type parameter `pose_msg_type`, with current supported value `PoseStamped`.
+3. Mandatory extraction of position `(x, y, z)` and orientation `(quaternion -> rpy/yaw)`.
+
+Velocity handling in current implementation:
+1. Optional use of estimated velocity via `use_estimated_velocity`.
+2. When enabled, velocity is derived from finite-difference position and passed through first-order LPF.
+3. LPF/estimation parameters are runtime configurable: `vel_lpf_tau`, `vel_diff_max_dt`.
 
 ### FR-3 State Mapping
-The node shall map MoCap/estimated state into planner state order consistent with:
-- [configs/sixdofaircraft/policy_convergence_tello_stage3.yaml](configs/sixdofaircraft/policy_convergence_tello_stage3.yaml)
-- `ground_mdp_state_labels`.
+The node shall map transformed pose/velocity into planner state order consistent with:
+1. `configs/sixdofaircraft/policy_convergence_tello_stage3.yaml`
+2. `ground_mdp_state_labels`
 
 ### FR-4 Command Output
-The node shall publish `geometry_msgs/Twist` to `cmd_vel` using planner action components:
+The node shall publish planner action to `geometry_msgs/Twist` as:
 1. `linear.x <- v_bx_cmd`
 2. `linear.y <- v_by_cmd`
 3. `linear.z <- v_bz_cmd`
 4. `angular.z <- yaw_rate_cmd`
 
 ### FR-5 Dual-Rate Control
-The system shall support:
-1. Planner update loop (e.g., 1-5 Hz depending on solve time).
-2. Command publish loop (e.g., 20-50 Hz) that re-publishes latest valid command.
+The node shall provide:
+1. Planner loop at configurable low rate (`planner_rate`).
+2. Command publish loop at configurable higher rate (`cmd_pub_rate`) that republishes latest command.
 
 ### FR-6 Safety State Machine
-The node shall implement at least:
-1. INIT (wait for valid pose stream).
-2. READY (armed for planning).
-3. RUNNING (publish planner commands).
-4. FAILSAFE (publish zero/hover command on timeout/errors).
+The node shall implement states:
+1. `INIT`: waiting first valid pose.
+2. `READY`: pose available, waiting arm/auto planning transition.
+3. `RUNNING`: planner active + nonzero command eligible.
+4. `FAILSAFE`: publish zero command.
 
 ### FR-7 Timeout Handling
-If pose timeout exceeds threshold (configurable, e.g., 0.2-0.5 s), node shall immediately enter FAILSAFE and stop planning.
+Current behavior:
+1. Pose timeout is monitored in `RUNNING` state.
+2. Command-hold timeout is monitored in `RUNNING` state.
+3. On timeout, node transitions to `FAILSAFE` and outputs zero command.
 
 ### FR-8 Bounds and Saturation
-Before publish, command shall be saturated by configured limits (`ground_mdp_U` or runtime limits).
+Before publish, command shall be saturated using:
+1. YAML-derived limits from `ground_mdp_U` (default source of truth), or
+2. Runtime limit overrides (`vx_max`, `vy_max`, `vz_max`, `yaw_rate_max`).
 
 ### FR-9 Runtime Reconfiguration
-Key parameters shall be externalized (YAML/ROS params):
-1. topics
-2. rates
-3. frame settings
-4. limits
-5. fail-safe thresholds
+The following shall be exposed via ROS params:
+1. topics and rates
+2. planner hyper-parameters
+3. frame transform settings
+4. limits and safety thresholds
+5. velocity estimation/filter parameters
 
-### FR-10 Logging
-The node shall log:
-1. planner latency per cycle
-2. command outputs
-3. mode transitions
-4. timeout and safety events
+### FR-10 Logging and Diagnostics
+The node shall provide:
+1. planner latency and success/failure indicators
+2. state transitions and timeout/error logs
+3. status heartbeat on `status_topic`
 
-## 6. Non-Functional Requirements
+## 5. Non-Functional Requirements
 ### NFR-1 Latency
-Planner cycle latency target should be monitored; if beyond threshold repeatedly, node shall degrade gracefully (hold last command / zero command strategy by policy).
+Planner cycle latency shall be observable and logged.
 
 ### NFR-2 Determinism
-Command publish loop jitter should be bounded and independent from planner spikes.
+Command publish loop shall remain decoupled from planner spikes by timer-driven republish.
 
 ### NFR-3 Robustness
-Any exception in planner step shall not crash command publisher without safety transition.
+Planner exceptions shall not crash the command publisher loop. If planner stops refreshing commands, watchdog timeout shall drive `FAILSAFE`.
 
 ### NFR-4 Maintainability
-Offline experiment script behavior in [scripts/policy_convergence.py](scripts/policy_convergence.py) should remain available for reproducibility.
+Offline planning scripts and pybind planner stack shall remain usable for reproducibility and debugging.
 
-## 7. Interface Requirements
+## 6. Interface Requirements
 ### I/O Topics
-1. Input pose topic: configurable.
+1. Input pose topic: configurable (`pose_topic`).
 2. Output command topic: `cmd_vel` (`geometry_msgs/Twist`).
-3. Optional status topic: planner state and diagnostics.
+3. Status topic: configurable (`status_topic`).
 
-### Service/Action (optional but recommended)
-1. start/stop planner.
-2. emergency stop.
-3. set target waypoint.
+### Services
+1. `~arm` (`std_srvs/SetBool`): arm/disarm planner runtime state.
+2. `~estop` (`std_srvs/Trigger`): emergency transition to `FAILSAFE`.
+3. `~update_target` (`std_srvs/Trigger`): apply `~target_pos` to MDP target.
 
-## 8. Validation and Acceptance Criteria
-### AC-1 Offline-in-the-loop
-Using recorded MoCap data replay, node publishes bounded `cmd_vel` with no crashes for >= 10 minutes.
+## 7. Validation Criteria
+### AC-1 Smoke and Safety
+Node should satisfy:
+1. state transitions work as designed.
+2. nonzero command appears in `RUNNING` when planning succeeds.
+3. `estop` forces zero command stream.
 
-### AC-2 Online smoke test (propellers off / safe mode)
-With live MoCap stream, mode transitions and timeout fail-safe trigger correctly.
+### AC-2 Two-Waypoint Runtime Mission
+Using `scripts/run_tello_two_waypoints_auto.py` with ROS test node mode:
+1. waypoint 0 and waypoint 1 are reached under configured threshold.
+2. mission exits success and emits plot/GIF/report artifacts.
 
-### AC-3 Controlled flight test
-In a netted/safe area:
-1. stable command stream
-2. no command spikes beyond limits
-3. fail-safe verified by artificially dropping pose topic
+### AC-3 Timeout Safety
+Pose drop or stale command update in `RUNNING` shall transition to `FAILSAFE`.
 
-### AC-4 Performance report
-Provide measured:
-1. planner cycle latency distribution
-2. publish rate
-3. timeout event count
+## 8. Known Risks
+1. Frame mismatch may invert control signs.
+2. UCT compute load may reduce effective planner update frequency.
+3. Velocity estimate quality depends on MoCap timestamp quality and LPF tuning.
+4. Driver-specific `cmd_vel` semantics may vary by package version.
 
-## 9. Risks
-1. Frame mismatch (MoCap world vs Tello body frame) may cause inverted control.
-2. Planner compute time may exceed practical online budget.
-3. Missing velocity estimate quality may destabilize behavior.
-4. Driver-side `cmd_vel` semantics (units/frame) may differ by package version.
-
-## 10. Suggested Implementation Phases (for next step)
-1. Phase A: ROS skeleton + pose->state mapping + bounded zero/hover command.
-2. Phase B: planner-in-loop single-step command generation.
-3. Phase C: dual-rate scheduling + safety state machine.
-4. Phase D: flight tuning and acceptance tests.
+## 9. Future Enhancements (Out of Current Scope)
+1. Additional pose message types beyond `PoseStamped`.
+2. Direct velocity ingestion from external estimator/IMU fusion.
+3. Wider timeout policy coverage outside `RUNNING`.
+4. Rich typed status topic (instead of string payload).

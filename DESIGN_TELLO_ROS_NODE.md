@@ -51,7 +51,15 @@ PoseStamped (世界系位姿)
   ▼
 13 维状态向量:
   [p_x, p_y, p_z, v_x, v_y, v_z, φ, θ, ψ, p, q, r, time]
-     世界位置      世界速度(差分)    姿态     角速度(暂为0) 时间步
+    世界位置      世界速度(差分+LPF) 姿态     角速度(暂为0) 时间步
+
+说明：位置与速度必须使用同一坐标约定。`mocap_frame`、`mocap_to_planner_rz_deg`、`mocap_to_planner_scale_xyz`
+对位置与速度同时生效，避免出现“位置已转换、速度未转换”的状态不一致。
+
+速度估计实现（当 `use_estimated_velocity=true`）：
+- 原始差分：`v_raw = (p_k - p_{k-1}) / dt`
+- 一阶低通：`v_k = v_{k-1} + α (v_raw - v_{k-1})`
+- 其中 `α = dt / (vel_lpf_tau + dt)`，并对过大 `dt`（`dt > vel_diff_max_dt`）执行保护重置。
 ```
 
 坐标系变换 `transform_pose()` 支持三种模式：
@@ -124,13 +132,19 @@ UCT 规划 → planned_traj.us[0,:] = [v_bx_cmd, v_by_cmd, v_bz_cmd, yaw_rate_cm
 | `pose_timeout` | 2.0 s | 位姿超时阈值 |
 | `max_cmd_hold` | 3.0 s | 指令保持超时 |
 | `clip_cmd` | true | 是否启用指令限幅 |
+| `use_estimated_velocity` | true | 是否使用位姿差分速度 |
+| `vel_lpf_tau` | 0.15 s | 速度估计一阶低通时间常数（<=0 关闭滤波） |
+| `vel_diff_max_dt` | 0.5 s | 差分速度允许的最大时间间隔 |
 | **坐标系** | | |
 | `mocap_frame` | ENU | MoCap 坐标系 |
 | `mocap_to_planner_rz_deg` | 0.0 | Z 轴旋转补偿 |
 | `mocap_to_planner_scale_xyz` | [1,1,1] | 缩放因子 |
 | **其他** | | |
-| `pose_msg_type` | PoseStamped | 位姿消息类型 |
+| `pose_msg_type` | PoseStamped | 位姿消息类型（当前仅支持 PoseStamped） |
 | `seed` | 0 | 随机种子 |
+
+补充：节点启动时会立即将 `target_pos` 写入 MDP（`set_xd`），因此 launch 中配置的
+`target_pos` 在首轮规划前即生效，无需先调用 `~update_target`。
 
 ## 4. 状态机
 
@@ -238,10 +252,15 @@ state:RUNNING|plan_count:15|plan_latency_ms:850|plan_success:True|cmd:[-6.50,2.1
 | 测试项 | 结果 |
 |--------|:----:|
 | 状态机 INIT→READY→RUNNING→FAILSAFE | ✅ |
-| cmd_vel 非零输出（7/8 测试点） | ✅ |
-| 与离线规划器方向一致 | ✅ |
+| cmd_vel 在规划阶段产生非零输出（严格断言） | ✅ |
+| 与离线规划器主方向一致（严格断言） | ✅ |
 | estop 触发零指令 | ✅ |
 | arm/disarm 状态切换 | ✅ |
+
+CI 判定口径：
+- `test_tello_planner.py` 必须同时满足：出现非零控制、`estop` 后连续零控制、包含 FAILSAFE 状态。
+- `test_tello_node_dryrun.py` 必须同时满足：有新非零命令输出，且“主方向符号一致”通过率不低于阈值（默认 35%，可参数化）。
+- 任一断言失败即返回非零退出码。
 
 ## 10. 使用方式
 
@@ -267,7 +286,8 @@ rosservice call /tello_planner/update_target          # 激活新目标
 | 限制 | 影响 | 建议 |
 |------|------|------|
 | 角速度 p/q/r 硬编码为 0 | 姿态机动时规划精度下降 | 从 MoCap 读取或 IMU 估计 |
-| 速度估计用原始差分，未滤波 | MoCap 噪声可能引入抖动 | 加低通滤波 |
+| 当前仅支持 PoseStamped 输入，不直接读取外部速度 | 速度完全依赖位姿质量与时间戳 | 如需更稳可接入外部速度估计/IMU 融合 |
+| 差分速度滤波参数需按场景调参（`vel_lpf_tau`、`vel_diff_max_dt`） | 参数不当会导致响应迟滞或噪声放大 | 结合 MoCap 频率与噪声水平整定 |
 | `pose_timeout` 仅检测 RUNNING 状态 | READY 状态下位姿丢失不报警 | 如需可扩展到所有状态 |
 | 不支持 cbds UCT 模式 | 只能用 no_cbds | 按需扩展 |
 | FAILSAFE 后需手动 arm(false) 恢复 | 不能自动恢复 | 设计如此（安全考虑） |

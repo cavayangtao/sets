@@ -36,6 +36,14 @@
     <param name="pose_timeout" value="2.0"/>  <!-- > planner latency (~0.8s @ N=500) -->
     <param name="max_cmd_hold" value="3.0"/>
     <param name="clip_cmd"     value="true"/>
+    <param name="use_estimated_velocity" value="true"/>
+
+    <!-- velocity estimation from pose (finite-difference + first-order LPF).
+         Node defaults: vel_lpf_tau=0.15, vel_diff_max_dt=0.5
+         Uncomment below to override:
+    <param name="vel_lpf_tau"     value="0.15"/>
+    <param name="vel_diff_max_dt" value="0.5"/>
+    -->
 
     <!-- command limits default from YAML ground_mdp_U.
          Uncomment below to override:

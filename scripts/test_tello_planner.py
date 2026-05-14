@@ -18,6 +18,7 @@ import threading
 import rospy
 from geometry_msgs.msg import Twist, PoseStamped, Point, Quaternion
 from std_srvs.srv import SetBool, Trigger
+from std_msgs.msg import String as StringMsg
 
 
 def _make_pose(x, y, z, yaw=0.0):
@@ -59,21 +60,26 @@ def test_smoke():
     statuses = []
     def status_cb(msg):
         statuses.append(msg.data)
-
-    from std_msgs.msg import String as StringMsg
     status_sub = rospy.Subscriber("/tello_planner/status", StringMsg, status_cb, queue_size=10)
+
+    # continuously publish poses to reduce timing flakiness in CI
+    stop_pose_stream = threading.Event()
+    def pose_loop():
+        step = 0
+        rate = rospy.Rate(20)
+        while not rospy.is_shutdown() and not stop_pose_stream.is_set():
+            p = _make_pose(-20.0 + 0.05 * step, 0.0, 12.0, yaw=0.0)
+            pose_pub.publish(p)
+            step += 1
+            rate.sleep()
+
+    pose_thread = threading.Thread(target=pose_loop, daemon=True)
+    pose_thread.start()
 
     rospy.sleep(1.0)  # let connections establish
 
-    # ── Phase 1: publish fake pose, verify transition INIT → READY → RUNNING ──
-    rospy.loginfo("=== Phase 1: publishing fake poses ===")
-    for step in range(10):
-        p = _make_pose(-20.0 + step * 0.2, 0.0, 12.0, yaw=0.0)
-        pose_pub.publish(p)
-        rospy.sleep(0.2)
-
     # give planner time to run one cycle (N=200 should be ~0.3s)
-    rospy.loginfo("Waiting for first plan (N=200, ~0.3s)...")
+    rospy.loginfo("=== Phase 1: waiting for planning output ===")
     rospy.sleep(5.0)
 
     with cmd_lock:
@@ -91,10 +97,11 @@ def test_smoke():
     rospy.loginfo("Estop response: %s", resp.message)
     rospy.sleep(2.0)
     with cmd_lock:
-        after_estop = len(cmds)
         recent = cmds[before_estop:] if before_estop < len(cmds) else []
-        all_zero = all(all(abs(v) < 1e-9 for v in c) for c in recent) if recent else True
-    rospy.loginfo("Post-estop cmds all zero: %s (%d msgs)", all_zero, len(recent))
+        tail = recent[-20:] if len(recent) >= 20 else recent
+        sustained_zero = all(all(abs(v) < 1e-9 for v in c) for c in tail) if tail else False
+    rospy.loginfo("Post-estop sustained-zero tail: %s (%d/%d msgs checked)",
+                  sustained_zero, len(tail), len(recent))
 
     # ── Phase 3: recover from FAILSAFE via disarm ──
     rospy.loginfo("=== Phase 3: disarm to recover ===")
@@ -104,6 +111,9 @@ def test_smoke():
     resp = arm(data=True)
     rospy.loginfo("Re-arm response: %s", resp.message)
     rospy.sleep(5.0)
+
+    stop_pose_stream.set()
+    pose_thread.join(timeout=1.0)
 
     # ── Summary ──
     rospy.loginfo("=== Summary ===")
@@ -115,8 +125,26 @@ def test_smoke():
             rospy.loginfo("Last  nonzero cmd:  vx=%.2f vy=%.2f vz=%.2f yaw=%.2f", *cn)
         rospy.loginfo("Cmd msgs total: %d, nonzero: %d", len(cmds), len(nonzero))
 
-    passed = len(nonzero) > 0
-    rospy.loginfo("SMOKE TEST %s", "PASSED" if passed else "FAILED")
+    states_joined = "|".join(statuses)
+    has_running = "state:RUNNING" in states_joined
+    has_failsafe = "state:FAILSAFE" in states_joined
+    had_nonzero = len(nonzero) > 0
+    had_post_estop_samples = len(recent) > 0
+
+    checks = {
+        "nonzero_cmd_before_estop": had_nonzero,
+        "post_estop_zero_cmd": sustained_zero and had_post_estop_samples,
+        "status_has_running": has_running,
+        "status_has_failsafe": has_failsafe,
+    }
+    failed = [name for name, ok in checks.items() if not ok]
+    passed = len(failed) == 0
+
+    if passed:
+        rospy.loginfo("SMOKE TEST PASSED")
+    else:
+        rospy.logerr("SMOKE TEST FAILED: %s", ", ".join(failed))
+
     return passed
 
 
