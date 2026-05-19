@@ -1,10 +1,17 @@
 <launch>
   <!-- Tello Planner ROS Node: MoCap → UCT-MPC → cmd_vel -->
 
+  <!-- S3 tuned defaults for smooth two-waypoint ROS rollout tests -->
   <arg name="config_name" default="policy_convergence_tello_stage3"/>
-  <arg name="uct_N"       default="500"/>
-  <arg name="planner_rate" default="2.0"/>
+  <arg name="uct_N"       default="10000"/>
+  <arg name="uct_max_depth" default="10"/>
+  <arg name="uct_c"       default="0.7"/>
+  <arg name="uct_wct"     default="2200.0"/>
+  <arg name="uct_mpc_depth" default="2"/>
+  <arg name="planner_rate" default="1.0"/>
   <arg name="cmd_pub_rate" default="30.0"/>
+  <arg name="pose_timeout" default="8.0"/>
+  <arg name="max_cmd_hold" default="12.0"/>
 
   <node name="tello_planner" pkg="sets" type="tello_planner_node.py"
         output="screen" respawn="false">
@@ -12,9 +19,10 @@
     <!-- planner config -->
     <param name="config_name"   value="$(arg config_name)"/>
     <param name="uct_N"         value="$(arg uct_N)"/>
-    <param name="uct_max_depth" value="12"/>
-    <param name="uct_c"         value="3.0"/>
-    <param name="uct_wct"       value="1200.0"/>
+    <param name="uct_max_depth" value="$(arg uct_max_depth)"/>
+    <param name="uct_c"         value="$(arg uct_c)"/>
+    <param name="uct_wct"       value="$(arg uct_wct)"/>
+    <param name="uct_mpc_depth" value="$(arg uct_mpc_depth)"/>
     <param name="uct_dt"        value="0.01"/>
 
     <!-- rates -->
@@ -33,8 +41,8 @@
 
     <!-- safety -->
     <param name="auto_arm"     value="true"/>
-    <param name="pose_timeout" value="2.0"/>  <!-- > planner latency (~0.8s @ N=500) -->
-    <param name="max_cmd_hold" value="3.0"/>
+    <param name="pose_timeout" value="$(arg pose_timeout)"/>  <!-- larger timeout for heavy stage3 planning -->
+    <param name="max_cmd_hold" value="$(arg max_cmd_hold)"/>
     <param name="clip_cmd"     value="true"/>
     <param name="use_estimated_velocity" value="true"/>
 

@@ -42,9 +42,25 @@ from std_srvs.srv import SetBool, Trigger
 from util import util
 
 
+def _parse_scale_xyz(value):
+    """Parse ROS param for scale xyz, accepting list or string literal."""
+    if isinstance(value, str):
+        try:
+            value = ast.literal_eval(value)
+        except Exception:
+            value = [1.0, 1.0, 1.0]
+    try:
+        arr = np.array(value, dtype=np.float64).reshape(-1)
+    except Exception:
+        arr = np.array([1.0, 1.0, 1.0], dtype=np.float64)
+    if arr.size != 3:
+        arr = np.array([1.0, 1.0, 1.0], dtype=np.float64)
+    return arr
+
+
 def transform_position(px, py, pz, frame_config):
     """Apply the same position transform convention as tello_planner_node."""
-    scale = np.array(frame_config.get("mocap_to_planner_scale_xyz", [1.0, 1.0, 1.0]), dtype=np.float64)
+    scale = _parse_scale_xyz(frame_config.get("mocap_to_planner_scale_xyz", [1.0, 1.0, 1.0]))
     rz_deg = float(frame_config.get("mocap_to_planner_rz_deg", 0.0))
 
     px, py, pz = px * scale[0], py * scale[1], pz * scale[2]
@@ -65,7 +81,7 @@ def transform_position(px, py, pz, frame_config):
 
 def planner_to_mocap_position(px, py, pz, frame_config):
     """Inverse of transform_position for position-only mapping."""
-    scale = np.array(frame_config.get("mocap_to_planner_scale_xyz", [1.0, 1.0, 1.0]), dtype=np.float64)
+    scale = _parse_scale_xyz(frame_config.get("mocap_to_planner_scale_xyz", [1.0, 1.0, 1.0]))
     rz_deg = float(frame_config.get("mocap_to_planner_rz_deg", 0.0))
     mocap_frame = frame_config.get("mocap_frame", "ENU")
 
@@ -161,23 +177,31 @@ class RosTestPoseNode:
         )
 
         self._uct = get_uct2()
+        sim_uct_N = int(rospy.get_param("/tello_planner/uct_N", cfg.get("uct_N", 500)))
+        sim_uct_max_depth = int(rospy.get_param("/tello_planner/uct_max_depth", cfg.get("uct_max_depth", 12)))
+        sim_uct_wct = float(rospy.get_param("/tello_planner/uct_wct", cfg.get("uct_wct", 1200.0)))
+        sim_uct_c = float(rospy.get_param("/tello_planner/uct_c", cfg.get("uct_c", 3.0)))
+        sim_uct_heuristic = rospy.get_param("/tello_planner/uct_heuristic_mode", cfg.get("uct_heuristic_mode", "shuffled"))
+        sim_uct_tree_exploration = rospy.get_param("/tello_planner/uct_tree_exploration", cfg.get("uct_tree_exploration", "uct"))
+        sim_uct_downsample = bool(rospy.get_param("/tello_planner/uct_downsample_traj_on", cfg.get("uct_downsample_traj_on", True)))
         self._uct.set_param(
-            int(rospy.get_param("/tello_planner/uct_N", cfg.get("uct_N", 500))),
-            int(cfg.get("uct_max_depth", 12)),
-            float(cfg.get("uct_wct", 1200.0)),
-            float(cfg.get("uct_c", 3.0)),
+            sim_uct_N,
+            sim_uct_max_depth,
+            sim_uct_wct,
+            sim_uct_c,
             False,
             False,
             False,
             False,
             False,
-            cfg.get("uct_heuristic_mode", "shuffled"),
-            cfg.get("uct_tree_exploration", "uct"),
-            bool(cfg.get("uct_downsample_traj_on", True)),
+            sim_uct_heuristic,
+            sim_uct_tree_exploration,
+            sim_uct_downsample,
             False,
         )
+        sim_seed = int(rospy.get_param("/tello_planner/seed", cfg.get("seed", 42)))
         self._rng = RNG()
-        self._rng.set_seed(42)
+        self._rng.set_seed(sim_seed)
         self._mpc_steps = int(rospy.get_param("/tello_planner/uct_mpc_depth", cfg.get("uct_mpc_depth", 2)))
         self._config_name = config_name
 
@@ -187,8 +211,8 @@ class RosTestPoseNode:
 
         # Publish initial pose immediately so planner can leave INIT.
         self._publish_pose(rospy.Time.now())
-        rospy.loginfo("RosTestPoseNode started: mode=%s pose=%s cmd=%s dt=%.3f",
-                  self._mode, self._pose_topic, self._cmd_topic, self._sim_dt)
+        rospy.loginfo("RosTestPoseNode started: mode=%s pose=%s cmd=%s dt=%.3f seed=%d",
+              self._mode, self._pose_topic, self._cmd_topic, self._sim_dt, sim_seed)
 
     def _cmd_cb(self, msg):
         with self._lock:
@@ -461,6 +485,7 @@ def save_plots(samples, wp0, wp1, out_prefix):
     z = np.array([s["z"] for s in samples], dtype=np.float64)
     vx = np.array([s["vx"] for s in samples], dtype=np.float64)
     vy = np.array([s["vy"] for s in samples], dtype=np.float64)
+    vz = np.array([s["vz"] for s in samples], dtype=np.float64)
 
     final_pos = np.array([x[-1], y[-1], z[-1]], dtype=np.float64)
     d_wp0 = np.linalg.norm(np.stack([x, y, z], axis=1) - np.array(wp0, dtype=np.float64), axis=1)
@@ -566,6 +591,48 @@ def save_plots(samples, wp0, wp1, out_prefix):
         "duration_s": float(t[-1] - t[0]) if len(t) > 1 else 0.0,
         "num_samples": int(len(samples)),
     }
+
+    # Smoothness and safety indicators for parameter tuning.
+    pos = np.stack([x, y, z], axis=1)
+    diffs = np.diff(pos, axis=0)
+    seg = np.linalg.norm(diffs, axis=1)
+    path_len = float(np.sum(seg))
+    straight_len = float(np.linalg.norm(np.array(wp1, dtype=np.float64) - pos[0]))
+    metrics["path_len"] = path_len
+    metrics["straight_len_start_to_wp1"] = straight_len
+    metrics["path_efficiency"] = float(straight_len / (path_len + 1e-9))
+
+    xy_step = np.diff(np.stack([x, y], axis=1), axis=0)
+    if xy_step.shape[0] > 1:
+        headings = np.arctan2(xy_step[:, 1], xy_step[:, 0])
+        dhead = np.diff(np.unwrap(headings))
+        metrics["total_turn_rad"] = float(np.sum(np.abs(dhead)))
+    else:
+        metrics["total_turn_rad"] = 0.0
+
+    cmd = np.stack([vx, vy, vz], axis=1)
+    if cmd.shape[0] > 1:
+        dcmd = np.diff(cmd, axis=0)
+        dcmd_norm = np.linalg.norm(dcmd, axis=1)
+        metrics["cmd_delta_rms"] = float(np.sqrt(np.mean(dcmd_norm ** 2)))
+        metrics["cmd_delta_max"] = float(np.max(dcmd_norm))
+    else:
+        metrics["cmd_delta_rms"] = 0.0
+        metrics["cmd_delta_max"] = 0.0
+
+    # 3D min distance from trajectory points to all axis-aligned obstacle boxes.
+    min_clearance = float("inf")
+    for xr, yr, zr in boxes:
+        x_min, x_max = min(xr[0], xr[1]), max(xr[0], xr[1])
+        y_min, y_max = min(yr[0], yr[1]), max(yr[0], yr[1])
+        z_min, z_max = min(zr[0], zr[1]), max(zr[0], zr[1])
+        dx = np.maximum(0.0, np.maximum(x_min - x, x - x_max))
+        dy = np.maximum(0.0, np.maximum(y_min - y, y - y_max))
+        dz = np.maximum(0.0, np.maximum(z_min - z, z - z_max))
+        dist = np.sqrt(dx * dx + dy * dy + dz * dz)
+        min_clearance = min(min_clearance, float(np.min(dist)))
+    metrics["min_obstacle_clearance"] = float(min_clearance if np.isfinite(min_clearance) else 0.0)
+
     return png_path, gif_path, metrics
 
 
