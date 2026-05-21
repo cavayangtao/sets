@@ -241,12 +241,31 @@ class TelloPlannerNode:
         self._yaw_rate_max = rospy.get_param("~yaw_rate_max", float(_default_lim[3]))
 
         # frame transform
+        _scale_xyz = rospy.get_param("~mocap_to_planner_scale_xyz", [1.0, 1.0, 1.0])
+        if isinstance(_scale_xyz, str):
+            try:
+                parsed = ast.literal_eval(_scale_xyz)
+                if isinstance(parsed, (list, tuple, np.ndarray)):
+                    _scale_xyz = list(parsed)
+                else:
+                    raise ValueError("scale_xyz string did not parse to sequence")
+            except Exception as e:
+                rospy.logwarn("Failed to parse string mocap_to_planner_scale_xyz, use default: %s", e)
+                _scale_xyz = [1.0, 1.0, 1.0]
         self._frame_config = {
             "mocap_frame": rospy.get_param("~mocap_frame", "ENU"),
             "mocap_to_planner_rz_deg": rospy.get_param("~mocap_to_planner_rz_deg", 0.0),
-            "mocap_to_planner_scale_xyz": rospy.get_param(
-                "~mocap_to_planner_scale_xyz", [1.0, 1.0, 1.0]),
+            "mocap_to_planner_scale_xyz": _scale_xyz,
         }
+
+        # command output mapping
+        # planner: publish planner command directly
+        # enu: map planner/NED-style [vx, vy, vz, yaw_rate] to ENU cmd conventions
+        self._cmd_output_mode = rospy.get_param("~cmd_output_mode", "planner")
+        self._cmd_output_invert_x = rospy.get_param("~cmd_output_invert_x", False)
+        self._cmd_output_invert_y = rospy.get_param("~cmd_output_invert_y", False)
+        self._cmd_output_invert_z = rospy.get_param("~cmd_output_invert_z", False)
+        self._cmd_output_invert_yaw = rospy.get_param("~cmd_output_invert_yaw", False)
 
         # pose message type
         self._pose_msg_type = rospy.get_param("~pose_msg_type", "PoseStamped")
@@ -518,6 +537,7 @@ class TelloPlannerNode:
         if self._state == State.RUNNING:
             with self._lock:
                 cmd = self._cmd.copy()
+            cmd = self._map_output_command(cmd)
             twist.linear.x  = cmd[0]
             twist.linear.y  = cmd[1]
             twist.linear.z  = cmd[2]
@@ -579,6 +599,28 @@ class TelloPlannerNode:
             np.clip(action[3], -self._yaw_rate_max, self._yaw_rate_max),
         ], dtype=np.float64)
 
+    def _map_output_command(self, cmd):
+        """Map planner command into output frame expected by cmd_vel consumer."""
+        out = np.array(cmd[:4], dtype=np.float64)
+
+        if self._cmd_output_mode == "enu":
+            # Planner runs in NED-like convention; cmd_vel consumer in Gazebo usually uses ENU (z-up).
+            out[2] = -out[2]
+            out[3] = -out[3]
+        elif self._cmd_output_mode != "planner":
+            rospy.logwarn_throttle(5.0, "Unknown cmd_output_mode=%s, fallback to planner", self._cmd_output_mode)
+
+        if self._cmd_output_invert_x:
+            out[0] = -out[0]
+        if self._cmd_output_invert_y:
+            out[1] = -out[1]
+        if self._cmd_output_invert_z:
+            out[2] = -out[2]
+        if self._cmd_output_invert_yaw:
+            out[3] = -out[3]
+
+        return out
+
     # ── services ──────────────────────────────────────────────────────────────
 
     def _arm_callback(self, req):
@@ -586,6 +628,7 @@ class TelloPlannerNode:
             if req.data:
                 if self._state == State.READY:
                     self._state = State.RUNNING
+                    self._cmd_stamp = rospy.Time.now()
                     return SetBoolResponse(success=True, message="Armed → RUNNING")
                 else:
                     return SetBoolResponse(success=False,
@@ -615,6 +658,18 @@ class TelloPlannerNode:
         if new_target is None:
             return TriggerResponse(success=False,
                                    message="~target_pos param not set. Use: rosparam set /tello_planner/target_pos \"[...]\"")
+
+        if isinstance(new_target, str):
+            try:
+                parsed = ast.literal_eval(new_target)
+                if isinstance(parsed, (list, tuple, np.ndarray)):
+                    new_target = list(parsed)
+                else:
+                    raise ValueError("target_pos string did not parse to sequence")
+            except Exception as e:
+                return TriggerResponse(success=False,
+                                       message=f"Failed to parse string target_pos: {e}")
+
         try:
             xd = np.array(new_target, dtype=np.float64).reshape(-1, 1)
             with self._lock:

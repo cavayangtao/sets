@@ -155,8 +155,8 @@ def main():
     # config_path = util.get_config_path("fixed_wing")
     # config_path = util.get_config_path("value_convergence")
     # config_path = util.get_config_path("policy_convergence")
-    # config_path = util.get_config_path("policy_convergence_drone")
-    config_path = util.get_config_path("policy_convergence_tello_stage3")
+    config_path = util.get_config_path("policy_convergence_drone")
+    # config_path = util.get_config_path("policy_convergence_tello_stage3")
     # tello_stage = os.environ.get("TELLO_STAGE", "stage1").strip().lower()
     # tello_config_map = {
     #     "stage1": "policy_convergence_tello_stage1",

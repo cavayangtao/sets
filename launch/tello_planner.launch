@@ -3,15 +3,20 @@
 
   <!-- S3 tuned defaults for smooth two-waypoint ROS rollout tests -->
   <arg name="config_name" default="policy_convergence_tello_stage3"/>
-  <arg name="uct_N"       default="10000"/>
+     <arg name="uct_N"       default="300"/>
   <arg name="uct_max_depth" default="10"/>
   <arg name="uct_c"       default="0.7"/>
   <arg name="uct_wct"     default="2200.0"/>
   <arg name="uct_mpc_depth" default="2"/>
-  <arg name="planner_rate" default="1.0"/>
+     <arg name="planner_rate" default="3.0"/>
   <arg name="cmd_pub_rate" default="30.0"/>
-  <arg name="pose_timeout" default="8.0"/>
-  <arg name="max_cmd_hold" default="12.0"/>
+     <arg name="pose_timeout" default="4.0"/>
+     <arg name="max_cmd_hold" default="35.0"/>
+   <arg name="cmd_output_mode" default="enu"/>
+   <arg name="cmd_output_invert_x" default="false"/>
+   <arg name="cmd_output_invert_y" default="true"/>
+   <arg name="cmd_output_invert_z" default="false"/>
+   <arg name="cmd_output_invert_yaw" default="true"/>
 
   <node name="tello_planner" pkg="sets" type="tello_planner_node.py"
         output="screen" respawn="false">
@@ -45,21 +50,21 @@
     <param name="max_cmd_hold" value="$(arg max_cmd_hold)"/>
     <param name="clip_cmd"     value="true"/>
     <param name="use_estimated_velocity" value="true"/>
+   <param name="cmd_output_mode" value="$(arg cmd_output_mode)"/>
+   <param name="cmd_output_invert_x" value="$(arg cmd_output_invert_x)"/>
+   <param name="cmd_output_invert_y" value="$(arg cmd_output_invert_y)"/>
+   <param name="cmd_output_invert_z" value="$(arg cmd_output_invert_z)"/>
+   <param name="cmd_output_invert_yaw" value="$(arg cmd_output_invert_yaw)"/>
 
-    <!-- velocity estimation from pose (finite-difference + first-order LPF).
-         Node defaults: vel_lpf_tau=0.15, vel_diff_max_dt=0.5
-         Uncomment below to override:
+    <!-- velocity estimation from pose (finite-difference + first-order LPF). -->
     <param name="vel_lpf_tau"     value="0.15"/>
-    <param name="vel_diff_max_dt" value="0.5"/>
-    -->
+    <param name="vel_diff_max_dt" value="2.0"/>
 
-    <!-- command limits default from YAML ground_mdp_U.
-         Uncomment below to override:
-    <param name="vx_max"       value="7.0"/>
-    <param name="vy_max"       value="7.0"/>
-    <param name="vz_max"       value="2.5"/>
-    <param name="yaw_rate_max" value="1.8"/>
-    -->
+       <!-- command limits tuned for smooth Gazebo closed-loop behavior -->
+       <param name="vx_max"       value="2.0"/>
+       <param name="vy_max"       value="2.0"/>
+       <param name="vz_max"       value="0.8"/>
+       <param name="yaw_rate_max" value="0.6"/>
 
     <!-- frame transform: mocap ENU → planner NED (z-down) -->
     <param name="mocap_frame"             value="ENU"/>
