@@ -1,0 +1,98 @@
+<launch>
+  <!-- Drone Trajectory Planner + Stanley Controller -->
+  <!--   Planner: UCT-MPC -> /planner/trajectory (Path) + /planner/control_seq -->
+  <!-- Controller: Stanley lateral control -> /cmd_vel (Twist)            -->
+
+  <!-- ===== Planner args ===== -->
+  <arg name="config_name"       default="policy_convergence_drone"/>
+  <arg name="uct_N"             default="500"/>
+  <arg name="uct_max_depth"     default="12"/>
+  <arg name="uct_c"             default="3.0"/>
+  <arg name="uct_wct"           default="1200.0"/>
+  <arg name="planner_rate"      default="2.0"/>
+  <arg name="trajectory_frame"  default="world"/>
+
+  <!-- ===== Controller args ===== -->
+  <arg name="control_rate"      default="30.0"/>
+  <arg name="k"                 default="0.5"/>
+  <arg name="target_velocity"   default="0.2"/>
+
+  <!-- ===== Planner Node ===== -->
+  <node name="drone_planner" pkg="sets" type="drone_planner_node.py"
+        output="screen" respawn="false">
+
+    <!-- config -->
+    <param name="config_name"        value="$(arg config_name)"/>
+
+    <!-- uct overrides (reduced for online use) -->
+    <param name="uct_N"              value="$(arg uct_N)"/>
+    <param name="uct_max_depth"      value="$(arg uct_max_depth)"/>
+    <param name="uct_c"              value="$(arg uct_c)"/>
+    <param name="uct_wct"            value="$(arg uct_wct)"/>
+    <param name="uct_dt"             value="0.01"/>
+
+    <!-- rates -->
+    <param name="planner_rate"       value="$(arg planner_rate)"/>
+
+    <!-- topics -->
+    <param name="pose_topic"         value="/pose"/>
+    <param name="trajectory_topic"   value="/planner/trajectory"/>
+    <param name="control_seq_topic"  value="/planner/control_seq"/>
+    <param name="trajectory_frame"   value="$(arg trajectory_frame)"/>
+    <param name="status_topic"       value="/drone_planner/status"/>
+
+    <!-- target: initial goal, change at runtime via:
+         rosparam set /drone_planner/target_pos "[x,y,z,...]"
+         rosservice call /drone_planner/update_target -->
+    <param name="target_pos" value="[120.0, 120.0, -120.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]"/>
+
+    <!-- safety / behavior -->
+    <param name="auto_arm"           value="true"/>
+    <param name="pose_timeout"       value="4.0"/>
+    <param name="use_estimated_velocity" value="true"/>
+
+    <!-- velocity estimation -->
+    <param name="vel_lpf_tau"        value="0.15"/>
+    <param name="vel_diff_max_dt"    value="0.5"/>
+
+    <!-- frame transform: ENU -> NED (z-down) for planner -->
+    <param name="mocap_frame"              value="ENU"/>
+    <param name="mocap_to_planner_rz_deg"  value="0.0"/>
+    <param name="mocap_to_planner_scale_xyz" value="[1.0, 1.0, 1.0]"/>
+
+    <!-- trajectory output: downsample to at most N points -->
+    <param name="trajectory_max_points" value="200"/>
+
+    <!-- seed -->
+    <param name="seed" value="0"/>
+  </node>
+
+  <!-- ===== Stanley Controller Node ===== -->
+  <node name="stanley_controller" pkg="sets" type="stanley_controller_node.py"
+        output="screen" respawn="false">
+
+    <!-- topics -->
+    <param name="pose_topic"         value="/pose"/>
+    <param name="trajectory_topic"   value="/planner/trajectory"/>
+    <param name="cmd_vel_topic"      value="/cmd_vel"/>
+
+    <!-- stanley gains -->
+    <param name="k"                  value="$(arg k)"/>
+    <param name="Kp"                 value="1.0"/>
+    <param name="L"                  value="0.2"/>
+
+    <!-- limits -->
+    <param name="max_steer"          value="0.5236"/>  <!-- 30 deg in rad -->
+    <param name="max_w"              value="0.5"/>
+    <param name="target_velocity"    value="$(arg target_velocity)"/>
+
+    <!-- scaling factors -->
+    <param name="factor_v"           value="1.0"/>
+    <param name="factor_w"           value="1.0"/>
+
+    <!-- rates & timing -->
+    <param name="control_rate"       value="$(arg control_rate)"/>
+    <param name="trajectory_timeout" value="0.5"/>
+    <param name="spline_ds"          value="0.01"/>
+  </node>
+</launch>
