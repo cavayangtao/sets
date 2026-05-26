@@ -84,7 +84,6 @@ class StanleyControllerNode:
         self._cx = None
         self._cy = None
         self._cyaw = None
-        self._last_idx = 0
         self._last_trajectory_time = rospy.Time(0)
         self._spline_ready = False
 
@@ -144,7 +143,6 @@ class StanleyControllerNode:
             self._cx = cx
             self._cy = cy
             self._cyaw = cyaw
-            self._last_idx = 0
             self._spline_ready = True
             self._last_trajectory_time = rospy.Time.now()
             rospy.logdebug("Spline built: %d waypoints -> %d spline points",
@@ -175,7 +173,7 @@ class StanleyControllerNode:
             self._cmd_pub.publish(twist)
             return
 
-        if self._last_idx > target_idx:
+        if target_idx < len(self._cx) - 1:
             di, target_idx = stanley_control(
                 state, self._cx, self._cy, self._cyaw, target_idx,
                 self._k, self._L)
