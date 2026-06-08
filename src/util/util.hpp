@@ -38,9 +38,10 @@ class RNG {
 struct Trajectory {
     std::vector<Eigen::VectorXd> xs;
     std::vector<Eigen::VectorXd> us;
-    std::vector<double> rs; 
+    std::vector<double> rs;
+    std::vector<double> vz_cmds;  // 纵向速度指令序列（向后兼容：默认空，旧订阅方可忽略）
     bool is_valid;
-    double value; 
+    double value;
 };
 
 
@@ -188,7 +189,8 @@ bool is_int_in_int_vec(int my_var, std::vector<int> my_list){
 void extend_traj(Trajectory &t1, const Trajectory &t2) {
     t1.xs.insert( t1.xs.end(), t2.xs.begin(), t2.xs.end() );
     t1.us.insert( t1.us.end(), t2.us.begin(), t2.us.end() );
-    t1.rs.insert( t1.rs.end(), t2.rs.begin(), t2.rs.end() ); 
+    t1.rs.insert( t1.rs.end(), t2.rs.begin(), t2.rs.end() );
+    t1.vz_cmds.insert( t1.vz_cmds.end(), t2.vz_cmds.begin(), t2.vz_cmds.end() );
     t1.is_valid = t1.is_valid && t2.is_valid;
     t1.value = t1.value + t2.value; }
 
@@ -396,12 +398,18 @@ Trajectory subsample_trajectory(Trajectory input_traj, int num_samples) {
         subsampled_traj.xs.push_back(input_traj.xs[index]);
         subsampled_traj.us.push_back(input_traj.us[index]);
         subsampled_traj.rs.push_back(input_traj.rs[index]);
+        if (index < input_traj.vz_cmds.size()) {
+            subsampled_traj.vz_cmds.push_back(input_traj.vz_cmds[index]);
+        }
     }
-    // always include last index 
+    // always include last index
     size_t index = traj_length-1;
     subsampled_traj.xs.push_back(input_traj.xs[index]);
     subsampled_traj.us.push_back(input_traj.us[index]);
     subsampled_traj.rs.push_back(input_traj.rs[index]);
+    if (index < input_traj.vz_cmds.size()) {
+        subsampled_traj.vz_cmds.push_back(input_traj.vz_cmds[index]);
+    }
 
     // update other things 
     subsampled_traj.is_valid = input_traj.is_valid;

@@ -17,10 +17,12 @@ Key features:
 import rospy
 from geometry_msgs.msg import Twist, PoseStamped
 from nav_msgs.msg import Path as RosPath
+from std_msgs.msg import Float64
 from tf.transformations import euler_from_quaternion
 import numpy as np
 import sys
 import os
+import ast
 
 # Import cubic spline planner from same directory
 _script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -29,11 +31,13 @@ import cubic_spline_planner
 
 
 class State(object):
-    def __init__(self, x=0.0, y=0.0, yaw=0.0, v=0.0):
+    def __init__(self, x=0.0, y=0.0, z=0.0, yaw=0.0, v=0.0, vz=0.0):
         self.x = x
         self.y = y
+        self.z = z
         self.yaw = yaw
         self.v = v
+        self.vz = vz
 
 
 def normalize_angle(angle):
@@ -83,15 +87,26 @@ class StanleyControllerNode:
         self._state = State()
         self._cx = None
         self._cy = None
+        self._cz = None
         self._cyaw = None
         self._last_trajectory_time = rospy.Time(0)
         self._spline_ready = False
+        self._last_pose_time = None
+        self._last_pose_z = None
+        self._last_valid_vz_cmd = 0.0
+        self._altitude_input_was_valid = True
+        self._latest_vz_ff = 0.0
+        self._latest_vz_ff_time = rospy.Time(0)
 
         # Subscribers
         self._traj_sub = rospy.Subscriber(
             self._trajectory_topic, RosPath, self._trajectory_callback, queue_size=1)
         self._pose_sub = rospy.Subscriber(
             self._pose_topic, PoseStamped, self._pose_callback, queue_size=10)
+        self._vz_cmd_sub = None
+        if self._use_vz_ff_from_topic:
+            self._vz_cmd_sub = rospy.Subscriber(
+                self._vz_cmd_topic, Float64, self._vz_cmd_callback, queue_size=10)
 
         # Publisher
         self._cmd_pub = rospy.Publisher(self._cmd_vel_topic, Twist, queue_size=10)
@@ -102,6 +117,19 @@ class StanleyControllerNode:
 
         rospy.loginfo("StanleyControllerNode initialized: k=%.2f, v=%.2f, rate=%.1f Hz",
                       self._k, self._target_velocity, self._control_rate)
+
+    def _parse_list_param(self, name, default_value):
+        raw = rospy.get_param(name, default_value)
+        if isinstance(raw, str):
+            try:
+                raw = ast.literal_eval(raw)
+            except Exception:
+                rospy.logwarn("Param %s is not a valid list string: %s", name, raw)
+                return list(default_value)
+        if not isinstance(raw, (list, tuple)):
+            rospy.logwarn("Param %s should be list/tuple, got %s", name, type(raw))
+            return list(default_value)
+        return list(raw)
 
     def _load_params(self):
         self._k = rospy.get_param("~k", 0.5)
@@ -119,13 +147,67 @@ class StanleyControllerNode:
         self._cmd_vel_topic = rospy.get_param("~cmd_vel_topic", "/cmd_vel")
         self._control_rate = rospy.get_param("~control_rate", 30.0)
 
+        # Decoupled vertical control params
+        self._enable_lateral_control = rospy.get_param("~enable_lateral_control", True)
+        self._enable_vertical_control = rospy.get_param("~enable_vertical_control", True)
+        self._enable_altitude_hold = rospy.get_param("~enable_altitude_hold", True)
+        self._kp_z = rospy.get_param("~kp_z", 1.0)
+        self._z_deadband = rospy.get_param("~z_deadband", 0.05)
+
+        _vz_limit = self._parse_list_param("~vz_limit", [-2.0, 2.0])
+        if len(_vz_limit) == 2 and _vz_limit[0] < _vz_limit[1]:
+            self._vz_limit = [float(_vz_limit[0]), float(_vz_limit[1])]
+        else:
+            rospy.logwarn("Invalid ~vz_limit=%s, fallback to [-2.0, 2.0]", _vz_limit)
+            self._vz_limit = [-2.0, 2.0]
+
+        _z_bounds = self._parse_list_param("~z_bounds", [-500.0, 500.0])
+        if len(_z_bounds) == 2 and _z_bounds[0] < _z_bounds[1]:
+            self._z_bounds = [float(_z_bounds[0]), float(_z_bounds[1])]
+        else:
+            rospy.logwarn("Invalid ~z_bounds=%s, fallback to [-500.0, 500.0]", _z_bounds)
+            self._z_bounds = [-500.0, 500.0]
+
+        self._use_vz_ff_from_topic = rospy.get_param("~use_vz_ff_from_topic", True)
+        self._vz_cmd_topic = rospy.get_param("~vz_cmd_topic", "/planner/vz_cmd")
+        self._vz_cmd_timeout = float(rospy.get_param("~vz_cmd_timeout", 1.0))
+        self._vz_estimation_alpha = float(rospy.get_param("~vz_estimation_alpha", 0.25))
+
+        # Normalize invalid values to deterministic defaults.
+        if self._kp_z < 0.0:
+            rospy.logwarn("~kp_z is negative (%.3f), clamp to 0.0", self._kp_z)
+            self._kp_z = 0.0
+        if self._z_deadband < 0.0:
+            rospy.logwarn("~z_deadband is negative (%.3f), clamp to 0.0", self._z_deadband)
+            self._z_deadband = 0.0
+        self._vz_estimation_alpha = float(np.clip(self._vz_estimation_alpha, 0.0, 1.0))
+
     def _pose_callback(self, msg):
         self._state.x = msg.pose.position.x
         self._state.y = msg.pose.position.y
+        self._state.z = msg.pose.position.z
         quat = msg.pose.orientation
         quaternion = [quat.x, quat.y, quat.z, quat.w]
         self._state.yaw = euler_from_quaternion(quaternion)[2]
         self._state.v = self._target_velocity
+
+        stamp = msg.header.stamp
+        if stamp is None or stamp == rospy.Time():
+            stamp = rospy.Time.now()
+
+        if self._last_pose_time is not None and self._last_pose_z is not None:
+            dt = (stamp - self._last_pose_time).to_sec()
+            if 1e-6 < dt < 1.0:
+                raw_vz = (self._state.z - self._last_pose_z) / dt
+                alpha = self._vz_estimation_alpha
+                self._state.vz = (1.0 - alpha) * self._state.vz + alpha * raw_vz
+
+        self._last_pose_time = stamp
+        self._last_pose_z = self._state.z
+
+    def _vz_cmd_callback(self, msg):
+        self._latest_vz_ff = float(msg.data)
+        self._latest_vz_ff_time = rospy.Time.now()
 
     def _trajectory_callback(self, msg):
         """Receive planned trajectory, build cubic spline for tracking."""
@@ -136,6 +218,7 @@ class StanleyControllerNode:
 
         ax = [p.pose.position.x for p in poses]
         ay = [p.pose.position.y for p in poses]
+        az = [p.pose.position.z for p in poses]
 
         try:
             cx, cy, cyaw, ck, s = cubic_spline_planner.calc_spline_course(
@@ -143,6 +226,14 @@ class StanleyControllerNode:
             self._cx = cx
             self._cy = cy
             self._cyaw = cyaw
+
+            if len(az) >= 2:
+                src = np.arange(len(az), dtype=np.float64)
+                dst = np.linspace(0.0, len(az) - 1, num=len(cx), dtype=np.float64)
+                self._cz = np.interp(dst, src, np.array(az, dtype=np.float64)).tolist()
+            else:
+                self._cz = [az[0]] * len(cx)
+
             self._spline_ready = True
             self._last_trajectory_time = rospy.Time.now()
             rospy.logdebug("Spline built: %d waypoints -> %d spline points",
@@ -150,6 +241,52 @@ class StanleyControllerNode:
         except Exception as e:
             rospy.logerr("Failed to build spline from trajectory: %s", e)
             self._spline_ready = False
+            self._cz = None
+
+    def _get_vz_feedforward(self):
+        if not self._use_vz_ff_from_topic:
+            return 0.0
+        if self._latest_vz_ff_time == rospy.Time(0):
+            return 0.0
+        if self._vz_cmd_timeout > 0.0:
+            age = (rospy.Time.now() - self._latest_vz_ff_time).to_sec()
+            if age > self._vz_cmd_timeout:
+                return 0.0
+        return self._latest_vz_ff
+
+    def _compute_vertical_velocity_command(self, z_ref, z_meas, vz_ff):
+        if not self._enable_vertical_control:
+            self._last_valid_vz_cmd = 0.0
+            return 0.0
+
+        input_invalid = False
+        reason = ""
+        if np.isnan(z_ref) or np.isnan(z_meas):
+            input_invalid = True
+            reason = "nan"
+        elif z_ref < self._z_bounds[0] or z_ref > self._z_bounds[1] or z_meas < self._z_bounds[0] or z_meas > self._z_bounds[1]:
+            input_invalid = True
+            reason = "out_of_bounds"
+
+        if input_invalid and self._enable_altitude_hold:
+            if self._altitude_input_was_valid:
+                rospy.logwarn("Vertical control hold: %s (z_ref=%.3f, z_meas=%.3f), keeping vz_cmd=%.3f",
+                              reason, z_ref, z_meas, self._last_valid_vz_cmd)
+                self._altitude_input_was_valid = False
+            return self._last_valid_vz_cmd
+
+        if not input_invalid and not self._altitude_input_was_valid:
+            rospy.loginfo("Vertical control input recovered (z_ref=%.3f, z_meas=%.3f)", z_ref, z_meas)
+            self._altitude_input_was_valid = True
+
+        e_z = z_ref - z_meas
+        vz_cmd = self._kp_z * e_z
+        if abs(e_z) < self._z_deadband:
+            vz_cmd = 0.0
+        vz_cmd += vz_ff
+        vz_cmd = float(np.clip(vz_cmd, self._vz_limit[0], self._vz_limit[1]))
+        self._last_valid_vz_cmd = vz_cmd
+        return vz_cmd
 
     def _control_callback(self, event):
         """Timer callback: compute and publish control command."""
@@ -173,7 +310,7 @@ class StanleyControllerNode:
             self._cmd_pub.publish(twist)
             return
 
-        if target_idx < len(self._cx) - 1:
+        if self._enable_lateral_control and target_idx < len(self._cx) - 1:
             di, target_idx = stanley_control(
                 state, self._cx, self._cy, self._cyaw, target_idx,
                 self._k, self._L)
@@ -184,9 +321,15 @@ class StanleyControllerNode:
             twist.linear.x = self._target_velocity * self._factor_v
             twist.angular.z = w * self._factor_w
         else:
-            # Reached end of path
             twist.linear.x = 0.0
             twist.angular.z = 0.0
+
+        if self._enable_vertical_control and self._cz is not None and len(self._cz) > 0:
+            z_ref = self._cz[min(target_idx, len(self._cz) - 1)]
+            vz_ff = self._get_vz_feedforward()
+            twist.linear.z = self._compute_vertical_velocity_command(z_ref, state.z, vz_ff)
+        else:
+            twist.linear.z = 0.0
 
         self._cmd_pub.publish(twist)
 

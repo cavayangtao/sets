@@ -170,10 +170,14 @@ class MDP {
             throw std::logic_error("set_weights not implemented"); }
 
         // for testing purposes
-        virtual Eigen::VectorXd eval_ff(const Eigen::VectorXd & state, const Eigen::VectorXd & action) { 
+        virtual Eigen::VectorXd eval_ff(const Eigen::VectorXd & state, const Eigen::VectorXd & action) {
             throw std::logic_error("eval_ff not implemented"); }
 
-        // leaf oracle 
+        // 纵向控制可观测接口：返回最近一次计算的 vz_cmd。
+        // 默认返回 0.0，SixDOFAircraft 覆写以返回实际值。
+        virtual double get_last_vz_cmd() { return 0.0; }
+
+        // leaf oracle
         virtual double V(Eigen::VectorXd state) { 
             return 0.0; }
 
@@ -255,10 +259,11 @@ Trajectory rollout_action_sequence(Eigen::VectorXd curr_state,
         is_valid = is_valid && mdp->is_state_valid(curr_state);
         traj.xs.push_back(curr_state);
         traj.us.push_back(u);
-        traj.rs.push_back(r); 
+        traj.rs.push_back(r);
+        traj.vz_cmds.push_back(mdp->get_last_vz_cmd());  // 记录纵向速度指令（向后兼容）
         if (break_when_invalid && !is_valid) { break; }
     }
-    // todo: account for discount in sum 
+    // todo: account for discount in sum
     traj.value = std::accumulate(traj.rs.begin(), traj.rs.end(), 0.0) / traj.xs.size();
     // traj.value = std::accumulate(traj.rs.begin(), traj.rs.end(), 0.0);
     traj.is_valid = is_valid;

@@ -151,6 +151,67 @@ class SixDOFAircraft : public MDP {
             m_attitude_kd = config["attitude_kd"] ? config["attitude_kd"].as<double>() : 0.45;
             m_max_tilt_command = config["max_tilt_command"] ? config["max_tilt_command"].as<double>() : 0.4;
 
+            // =====================================================================
+            // 解耦纵向 P 控制器参数加载与校验（均可由 YAML 覆盖）
+            // =====================================================================
+
+            // kp_z：P 增益（位置误差 → 速度指令 [1/s]）。
+            m_kp_z = config["kp_z"] ? config["kp_z"].as<double>() : 1.0;
+
+            // z_deadband：死区阈值 [m]（优先读取 z_deadband，回退至 vertical_dead_zone）。
+            if (config["z_deadband"]) {
+                m_vertical_dead_zone = config["z_deadband"].as<double>();
+            } else if (config["vertical_dead_zone"]) {
+                m_vertical_dead_zone = config["vertical_dead_zone"].as<double>();
+            } else {
+                m_vertical_dead_zone = 0.05;
+            }
+
+            // vz_limit：vz 速度指令限幅 [vz_min, vz_max] [m/s]。
+            if (config["vz_limit"]) {
+                std::vector<double> vz_limit_yml = config["vz_limit"].as<std::vector<double>>();
+                if (vz_limit_yml.size() == 2 && vz_limit_yml[0] < vz_limit_yml[1]) {
+                    m_vz_limit = Eigen::Vector2d(vz_limit_yml[0], vz_limit_yml[1]);
+                } else {
+                    std::cerr << "[VerticalControl] WARNING: vz_limit invalid (size="
+                              << vz_limit_yml.size() << " or reversed). "
+                              << "Falling back to default [-10.0, 10.0]." << std::endl;
+                    m_vz_limit = Eigen::Vector2d(-10.0, 10.0);
+                }
+            } else {
+                m_vz_limit = Eigen::Vector2d(-10.0, 10.0);
+            }
+
+            // 高度输入异常保持策略。
+            m_enable_altitude_hold = config["enable_altitude_hold"] ? config["enable_altitude_hold"].as<bool>() : true;
+            m_last_valid_vz_cmd = 0.0;
+            m_altitude_input_was_valid = true;
+
+            // 横纵控制独立启停。
+            m_enable_vertical_control = config["enable_vertical_control"] ? config["enable_vertical_control"].as<bool>() : true;
+            m_enable_lateral_control = config["enable_lateral_control"] ? config["enable_lateral_control"].as<bool>() : true;
+
+            // =====================================================================
+            // 纵向参数合法性校验（非法参数触发确定性回退默认行为）
+            // =====================================================================
+            if (m_kp_z < 0.0) {
+                std::cerr << "[VerticalControl] WARNING: kp_z=" << m_kp_z
+                          << " is negative. Clamping to 0.0 (P control disabled)."
+                          << std::endl;
+                m_kp_z = 0.0;
+            }
+            if (m_vertical_dead_zone < 0.0) {
+                std::cerr << "[VerticalControl] WARNING: z_deadband=" << m_vertical_dead_zone
+                          << " is negative. Clamping to 0.0 (dead zone disabled)."
+                          << std::endl;
+                m_vertical_dead_zone = 0.0;
+            }
+            if (m_kp_z > 0.0 && m_vertical_dead_zone >= std::abs(m_vz_limit(1) - m_vz_limit(0)) / m_kp_z) {
+                std::cerr << "[VerticalControl] WARNING: z_deadband=" << m_vertical_dead_zone
+                          << " exceeds effective control range. P controller may never engage."
+                          << std::endl;
+            }
+
             m_wind_period = config["wind_period"].as<int>();
             m_wind_duty_cycle = config["wind_duty_cycle"].as<double>();
             
@@ -402,27 +463,179 @@ class SixDOFAircraft : public MDP {
             return empty_u; 
         }
 
+        // =========================================================================
+        // Decoupled Vertical P Controller
+        // =========================================================================
+        // 解耦纵向 P 控制器：将 z 位置误差转换为 vz 速度指令。
+        // 仅使用纵向位置变量，不读取横向误差，确保横纵控制解耦。
+        //
+        // 默认策略：vz_cmd = kp_z * (z_ref - z_meas)
+        // 含可配置死区（e_z → 0 时 vz_cmd → 0）和 vz_limit 上下限饱和。
+        //
+        // 高度输入异常时（NaN、超界等），保持上一时刻有效输出（last_vz_cmd），
+        // 避免因数据错误导致突变控制。恢复有效输入后自动回到正常控制路径。
+        //
+        // Args:
+        //   z_ref:  全局系期望 z 位置 [m]
+        //   z_meas: 全局系测量 z 位置 [m]
+        // Returns:
+        //   vz_cmd: 机体系 z 速度指令 [m/s]，已通过死区、限幅和异常保持处理
+        // =========================================================================
+        double compute_vertical_velocity_command(double z_ref, double z_meas) {
+            // Step 0: 高度输入异常检测 —— 识别缺失、NaN、超界等场景。
+            if (m_enable_altitude_hold) {
+                bool input_invalid = false;
+                std::string hold_reason;
+                // 可配置规则 1：NaN 检测。
+                if (std::isnan(z_ref) || std::isnan(z_meas)) {
+                    input_invalid = true;
+                    hold_reason = "NaN";
+                }
+                // 可配置规则 2：超界检测（基于 m_X 第 2 行 z 轴上下界）。
+                else if (z_ref < m_X(2,0) || z_ref > m_X(2,1) ||
+                         z_meas < m_X(2,0) || z_meas > m_X(2,1)) {
+                    input_invalid = true;
+                    hold_reason = "out_of_bounds";
+                }
+                if (input_invalid) {
+                    // 策略触发日志（含触发原因，可检索）。
+                    if (m_altitude_input_was_valid) {
+                        std::cout << "[VerticalControl] Altitude input invalid: "
+                                  << hold_reason
+                                  << " (z_ref=" << z_ref
+                                  << ", z_meas=" << z_meas
+                                  << ", bounds=[" << m_X(2,0) << "," << m_X(2,1) << "])"
+                                  << ". Holding last_vz_cmd=" << m_last_valid_vz_cmd
+                                  << std::endl;
+                        m_altitude_input_was_valid = false;
+                    }
+                    // 异常时保持上一时刻输出，而非重置为 0。
+                    return m_last_valid_vz_cmd;
+                }
+                // 恢复有效输入后回到正常控制路径。
+                if (!m_altitude_input_was_valid) {
+                    std::cout << "[VerticalControl] Altitude input recovered: "
+                              << "z_ref=" << z_ref << ", z_meas=" << z_meas
+                              << ". Resuming normal P control."
+                              << std::endl;
+                    m_altitude_input_was_valid = true;
+                }
+            }
+            // Step 1: 计算纵向位置误差 e_z = z_ref - z_meas。
+            double e_z = z_ref - z_meas;
+            // Step 2: 默认 P 控制策略（可配置 kp_z）。
+            double vz_cmd = m_kp_z * e_z;
+            // Step 3: 死区策略 —— e_z 接近 0 时，vz_cmd 收敛到 0，避免振荡。
+            if (std::abs(e_z) < m_vertical_dead_zone) {
+                vz_cmd = 0.0;
+            }
+            // Step 4: vz_cmd 上下限饱和。
+            vz_cmd = std::max(std::min(vz_cmd, m_vz_limit(1)), m_vz_limit(0));
+            // 记录本次有效输出，供异常时保持使用。
+            m_last_valid_vz_cmd = vz_cmd;
+            return vz_cmd;
+        }
+
+        // =========================================================================
+        // Decoupled Vertical Control Interface
+        // =========================================================================
+        // 解耦纵向控制：使用 P 控制器将位置误差转换为速度指令，再计算推力。
+        // 此函数不读取任何横向误差变量（px, py, vx, vy, phi, theta, psi, p, q, r），
+        // 确保横纵控制解耦。
+        //
+        // Args:
+        //   z_ref:   全局系期望 z 位置 [m]
+        //   z_meas:  全局系测量 z 位置 [m]（state index 2）
+        //   vz_ref:  机体系期望 z 速度 [m/s]（速度前馈，kp_z=0 时作为主指令）
+        //   vz_meas: 机体系测量 z 速度 [m/s]（state index 5）
+        // Returns:
+        //   垂向推力指令 [N]（正 = 向上推力，已含重力补偿）
+        // =========================================================================
+        double decoupled_vertical_control(double z_ref, double z_meas,
+                                          double vz_ref, double vz_meas) {
+            double vz_cmd;
+            if (m_kp_z > 0.0) {
+                // 默认 P 控制：调用解耦 P 控制器 + 速度前馈分量。
+                vz_cmd = compute_vertical_velocity_command(z_ref, z_meas) + vz_ref;
+                // 叠加前馈后再次限幅。
+                vz_cmd = std::max(std::min(vz_cmd, m_vz_limit(1)), m_vz_limit(0));
+            } else {
+                // 纯速度前馈模式（kp_z=0，向后兼容）：直接使用外部速度指令。
+                vz_cmd = vz_ref;
+                // 记录 vz_cmd 供消息输出（向后兼容）。
+                m_last_valid_vz_cmd = vz_cmd;
+            }
+            // 纵向速度误差 —— 仅使用 z 轴速度，不读取横向速度。
+            double vz_error = vz_cmd - vz_meas;
+            // 重力补偿 + 速度误差校正（解耦于横航向通道）。
+            double thrust_z = m_mass * m_gravity - m_vbody_z_gain * vz_error;
+            // 施加内环执行器限幅。
+            thrust_z = std::max(std::min(thrust_z, m_inner_U(0,1)), m_inner_U(0,0));
+            return thrust_z;
+        }
+
+        // =========================================================================
+        // Control Command Assembly（控制命令聚合）
+        // =========================================================================
+        // 将纵向与横向控制输出组装为最终内环动作指令。
+        // 纵向与横向通道可独立启停，确保启停逻辑共存且互不侵入。
+        //
+        // 纵向通道（仅使用 z 轴状态，不读取横向变量）：
+        //   启用时：P 控制 + 速度前馈 → 推力
+        //   禁用时：纯重力补偿（基线保持）
+        // 横向通道（仅使用 x/y/姿态/角速度，不读取纵向变量）：
+        //   启用时：速度误差 → 姿态指令 → 姿态 PD → 力矩
+        //   禁用时：零力矩（基线保持）
+        //
+        // Returns: inner_action = [thrust_z, tau_x, tau_y, tau_z]
+        // =========================================================================
         Eigen::Matrix<double,4,1> map_vbody_command_to_quadrotor_action(const Eigen::VectorXd & state,
                                                                          const Eigen::VectorXd & action) {
-            // 外环误差：期望机体系速度/偏航角速度 - 当前值。
-            double vx_error = action(0,0) - state(3,0);
-            double vy_error = action(1,0) - state(4,0);
-            double vz_error = action(2,0) - state(5,0);
-            double yaw_rate_error = action(3,0) - state(11,0);
-
-            // 横向速度误差先转成姿态指令，再做倾角限幅。
-            double theta_cmd = std::max(std::min(-m_vbody_x_gain * vx_error, m_max_tilt_command), -m_max_tilt_command);
-            double phi_cmd = std::max(std::min(m_vbody_y_gain * vy_error, m_max_tilt_command), -m_max_tilt_command);
 
             Eigen::Matrix<double,4,1> inner_action;
-            // 纵向通道：重力补偿 + 速度误差校正。
-            inner_action(0,0) = m_mass * m_gravity - m_vbody_z_gain * vz_error;
-            // 姿态 PD：把姿态误差和角速度阻尼映射到力矩。
-            inner_action(1,0) = m_attitude_kp * (phi_cmd - state(6,0)) - m_attitude_kd * state(9,0);
-            inner_action(2,0) = m_attitude_kp * (theta_cmd - state(7,0)) - m_attitude_kd * state(10,0);
-            inner_action(3,0) = m_yaw_rate_gain * yaw_rate_error;
 
-            // 最终施加内环执行器限幅，保证动作可实现。
+            // =====================================================================
+            // 纵向通道（解耦于横向）
+            // =====================================================================
+            if (m_enable_vertical_control) {
+                // 通过解耦纵向控制接口计算推力（P 控制 + 速度前馈，仅使用 z 轴状态）。
+                inner_action(0,0) = decoupled_vertical_control(
+                    /* z_ref   = */ m_xd(2,0),
+                    /* z_meas  = */ state(2,0),
+                    /* vz_ref  = */ action(2,0),
+                    /* vz_meas = */ state(5,0));
+            } else {
+                // 纵向禁用时：纯重力补偿（基线保持），不读取任何纵向误差。
+                inner_action(0,0) = m_mass * m_gravity;
+            }
+
+            // =====================================================================
+            // 横向通道（解耦于纵向，不读取 z/vz 等纵向状态变量）
+            // =====================================================================
+            if (m_enable_lateral_control) {
+                // 横向速度误差 → 姿态指令（仅使用 vx, vy 状态）。
+                double vx_error = action(0,0) - state(3,0);
+                double vy_error = action(1,0) - state(4,0);
+                double theta_cmd = std::max(std::min(-m_vbody_x_gain * vx_error, m_max_tilt_command), -m_max_tilt_command);
+                double phi_cmd = std::max(std::min(m_vbody_y_gain * vy_error, m_max_tilt_command), -m_max_tilt_command);
+
+                // 姿态 PD：姿态误差和角速度阻尼 → 力矩（仅使用 phi, theta, p, q 状态）。
+                inner_action(1,0) = m_attitude_kp * (phi_cmd   - state(6,0)) - m_attitude_kd * state(9,0);
+                inner_action(2,0) = m_attitude_kp * (theta_cmd - state(7,0)) - m_attitude_kd * state(10,0);
+
+                // 偏航通道：偏航角速度误差 → 偏航力矩（仅使用 r 状态）。
+                double yaw_rate_error = action(3,0) - state(11,0);
+                inner_action(3,0) = m_yaw_rate_gain * yaw_rate_error;
+            } else {
+                // 横向禁用时：零力矩（基线保持），不读取任何横向误差。
+                inner_action(1,0) = 0.0;
+                inner_action(2,0) = 0.0;
+                inner_action(3,0) = 0.0;
+            }
+
+            // =====================================================================
+            // 最终内环执行器限幅（所有通道统一处理）
+            // =====================================================================
             for (int ii=0; ii<4; ii++) {
                 inner_action(ii,0) = std::max(std::min(inner_action(ii,0), m_inner_U(ii,1)), m_inner_U(ii,0));
             }
@@ -1078,6 +1291,12 @@ class SixDOFAircraft : public MDP {
             return V(state);
         }
 
+        // 覆写基类方法，返回最近一次计算的纵向速度指令。
+        // 用于消息扩展（Trajectory.vz_cmds），旧订阅方可忽略。
+        double get_last_vz_cmd() override {
+            return m_last_valid_vz_cmd;
+        }
+
         // jacobian information for SCP
         Eigen::MatrixXd dFdx(Eigen::VectorXd state, Eigen::VectorXd action) override {
             const auto f = [&](const Eigen::VectorXd& x) -> Eigen::VectorXd {
@@ -1219,7 +1438,18 @@ class SixDOFAircraft : public MDP {
         double m_attitude_kp;
         double m_attitude_kd;
         double m_max_tilt_command;
-        // thermals 
+        // 解耦纵向 P 控制器参数
+        double m_kp_z;                    // P 增益：位置误差 → 速度指令 [1/s]
+        double m_vertical_dead_zone;      // 死区阈值 [m]：|e_z| < 此值时 vz_cmd → 0
+        Eigen::Vector2d m_vz_limit;       // vz 速度指令限幅 [vz_min, vz_max] [m/s]
+        // 高度输入异常保持策略
+        bool m_enable_altitude_hold;      // 是否启用高度异常保持（可配置，默认 true）
+        double m_last_valid_vz_cmd;       // 上一时刻有效 vz 指令，异常时保持输出
+        bool m_altitude_input_was_valid;  // 上一周期输入是否有效（用于日志去抖）
+        // 横纵控制独立启停
+        bool m_enable_vertical_control;   // 纵向控制启用（可配置，默认 true）
+        bool m_enable_lateral_control;    // 横向控制启用（可配置，默认 true）
+        // thermals
         std::vector<Eigen::MatrixXd> m_Xs_thermal;
         std::vector<Eigen::VectorXd> m_Vs_thermal;
         int m_wind_period;

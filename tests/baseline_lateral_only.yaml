@@ -64,13 +64,6 @@
  attitude_kd: 0.7
 # 最大倾角指令限幅（rad），防止横滚/俯仰指令过激。
  max_tilt_command: 1.2
-# 解耦纵向控制参数（默认 P 控制）。
- kp_z: 1.0
- z_deadband: 0.05
- vz_limit: [-10.0, 10.0]
- enable_vertical_control: true
- enable_lateral_control: true
- enable_altitude_hold: true
  Xs_thermal: [
   [
    -1500, -1500, -750.2, -600.0, -600.0, -600.0, -2.0, -2.0, -10.0, -50.0, -50.0, -50.0, 0.0,
@@ -189,3 +182,6 @@
  model_num_hidden_layers: 2
  model_activation: "relu"
  model_path: "../hardware/b2_neuralaero_model.pt"
+# Lateral-only baseline for regression test
+enable_vertical_control: False
+enable_lateral_control: True

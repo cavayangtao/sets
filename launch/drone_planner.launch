@@ -9,13 +9,16 @@
   <arg name="uct_max_depth"     default="12"/>
   <arg name="uct_c"             default="3.0"/>
   <arg name="uct_wct"           default="1200.0"/>
-  <arg name="planner_rate"      default="2.0"/>
+  <arg name="planner_rate"      default="0.5"/>
   <arg name="trajectory_frame"  default="world"/>
 
   <!-- ===== Controller args ===== -->
   <arg name="control_rate"      default="30.0"/>
   <arg name="k"                 default="0.5"/>
   <arg name="target_velocity"   default="0.2"/>
+  <arg name="kp_z"              default="1.0"/>
+  <arg name="z_deadband"        default="0.05"/>
+  <arg name="vz_limit"          default="[-2.0, 2.0]"/>
 
   <!-- ===== Planner Node ===== -->
   <node name="drone_planner" pkg="sets" type="drone_planner_node.py"
@@ -38,6 +41,8 @@
     <param name="pose_topic"         value="/pose"/>
     <param name="trajectory_topic"   value="/planner/trajectory"/>
     <param name="control_seq_topic"  value="/planner/control_seq"/>
+    <param name="vz_cmd_topic"       value="/planner/vz_cmd"/>
+    <param name="vz_cmd_seq_topic"   value="/planner/vz_cmd_seq"/>
     <param name="trajectory_frame"   value="$(arg trajectory_frame)"/>
     <param name="status_topic"       value="/drone_planner/status"/>
 
@@ -74,6 +79,7 @@
     <!-- topics -->
     <param name="pose_topic"         value="/pose"/>
     <param name="trajectory_topic"   value="/planner/trajectory"/>
+    <param name="vz_cmd_topic"       value="/planner/vz_cmd"/>
     <param name="cmd_vel_topic"      value="/cmd_vel"/>
 
     <!-- stanley gains -->
@@ -90,9 +96,21 @@
     <param name="factor_v"           value="1.0"/>
     <param name="factor_w"           value="1.0"/>
 
+    <!-- decoupled vertical control -->
+    <param name="enable_lateral_control" value="true"/>
+    <param name="enable_vertical_control" value="true"/>
+    <param name="enable_altitude_hold" value="true"/>
+    <param name="kp_z"               value="$(arg kp_z)"/>
+    <param name="z_deadband"         value="$(arg z_deadband)"/>
+    <param name="vz_limit"           value="$(arg vz_limit)"/>
+    <param name="z_bounds"           value="[-500.0, 500.0]"/>
+    <param name="use_vz_ff_from_topic" value="true"/>
+    <param name="vz_cmd_timeout"     value="1.0"/>
+    <param name="vz_estimation_alpha" value="0.25"/>
+
     <!-- rates & timing -->
     <param name="control_rate"       value="$(arg control_rate)"/>
-    <param name="trajectory_timeout" value="0.5"/>
+    <param name="trajectory_timeout" value="2.5"/>
     <param name="spline_ds"          value="0.01"/>
   </node>
 </launch>

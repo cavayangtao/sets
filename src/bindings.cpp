@@ -231,6 +231,7 @@ PYBIND11_MODULE(bindings, m) {
         .def("clear_thermals", &MDP::clear_thermals)
         .def("set_weights", &MDP::set_weights)
         .def("eval_ff", &MDP::eval_ff)
+        .def("get_last_vz_cmd", &MDP::get_last_vz_cmd)  // 纵向速度指令可观测接口
         .def("sample_state", &MDP::sample_state)
         .def("initial_state", &MDP::initial_state)
         .def("empty_control", &MDP::empty_control)
@@ -304,7 +305,8 @@ PYBIND11_MODULE(bindings, m) {
         .def_readwrite("value", &Trajectory::value)
         .def_readwrite("xs", &Trajectory::xs)
         .def_readwrite("us", &Trajectory::us)
-        .def_readwrite("rs", &Trajectory::rs);
+        .def_readwrite("rs", &Trajectory::rs)
+        .def_readwrite("vz_cmds", &Trajectory::vz_cmds);  // 纵向速度指令序列（向后兼容扩展）
 
     pybind11::class_<AeroCoeffs> (m, "AeroCoeffs")
         .def(pybind11::init())
