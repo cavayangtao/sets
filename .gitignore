@@ -6,3 +6,11 @@
 
 data/*
 !data/rollout_result_policy_convergence_tello_stage3_0.pkl
+
+# Windows zone identifier files
+*.Identifier
+
+# Generated test plots (except v10 reference outputs)
+plots/drone_two_wp_test*
+plots/drone_obs_compare_*
+plots/tello_trajectory*
