@@ -327,7 +327,15 @@ class StanleyControllerNode:
         """Receive planned trajectory, build cubic spline for tracking."""
         poses = msg.poses
         if len(poses) < 2:
-            rospy.logwarn("Received trajectory with < 2 poses, ignoring")
+            # Keep following the previous spline for short path dropouts to avoid stop-go jitter.
+            if self._spline_ready:
+                self._last_trajectory_time = rospy.Time.now()
+                rospy.logwarn_throttle(
+                    2.0,
+                    "Received trajectory with < 2 poses, keep previous spline",
+                )
+            else:
+                rospy.logwarn_throttle(2.0, "Received trajectory with < 2 poses, ignoring")
             return
 
         ax = [p.pose.position.x for p in poses]
@@ -352,6 +360,8 @@ class StanleyControllerNode:
             ay = [p[1] for p in dedup]
             az = [p[2] for p in dedup]
 
+        had_spline = self._spline_ready
+
         try:
             cx, cy, cyaw, ck, s = cubic_spline_planner.calc_spline_course(
                 ax, ay, ds=self._spline_ds)
@@ -370,7 +380,10 @@ class StanleyControllerNode:
                 self._cz = [az[0]] * len(cx)
 
             self._spline_ready = True
-            self._last_target_idx = 0
+            if not had_spline:
+                self._last_target_idx = 0
+            else:
+                self._last_target_idx = int(np.clip(self._last_target_idx, 0, max(0, len(cx) - 2)))
             self._last_trajectory_time = rospy.Time.now()
             rospy.logdebug("Spline built: %d waypoints -> %d spline points",
                            len(poses), len(cx))

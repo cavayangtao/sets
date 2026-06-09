@@ -62,7 +62,7 @@
 
     <!-- velocity estimation -->
     <param name="vel_lpf_tau"        value="0.15"/>
-    <param name="vel_diff_max_dt"    value="0.5"/>
+    <param name="vel_diff_max_dt"    value="0.8"/>
 
     <!-- frame transform: ENU -> NED (z-down) for planner -->
     <param name="mocap_frame"              value="ENU"/>
@@ -114,8 +114,11 @@
 
     <!-- rates & timing -->
     <param name="control_rate"       value="$(arg control_rate)"/>
-    <param name="trajectory_timeout" value="2.5"/>
+    <param name="trajectory_timeout" value="3.0"/>
     <param name="spline_ds"          value="0.01"/>
+    <param name="goal_slowdown_distance" value="8.0"/>
+    <param name="goal_stop_distance" value="1.0"/>
+    <param name="min_forward_speed" value="0.04"/>
     <param name="timeout_hold_max"   value="2.0"/>
     <param name="timeout_hold_decay" value="0.985"/>
     <param name="min_waypoint_separation" value="0.01"/>

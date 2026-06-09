@@ -373,8 +373,8 @@ class DronePlannerNode:
                         self._est_vel = raw_vel
                 elif dt > self._vel_diff_max_dt:
                     rospy.logwarn_throttle(5.0,
-                        "Pose dt too large (dt=%.3fs); reset est vel", dt)
-                    self._est_vel = np.zeros(3)
+                        "Pose dt too large (dt=%.3fs); softly decay est vel", dt)
+                    self._est_vel *= 0.5
             self._prev_pos = pos
             self._prev_stamp = now
 
