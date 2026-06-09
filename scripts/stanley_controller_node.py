@@ -93,10 +93,14 @@ class StanleyControllerNode:
         self._spline_ready = False
         self._last_pose_time = None
         self._last_pose_z = None
+        self._last_target_idx = 0
         self._last_valid_vz_cmd = 0.0
         self._altitude_input_was_valid = True
         self._latest_vz_ff = 0.0
         self._latest_vz_ff_time = rospy.Time(0)
+        self._last_cmd_linear_x = 0.0
+        self._last_cmd_angular_z = 0.0
+        self._last_cmd_linear_z = 0.0
 
         # Subscribers
         self._traj_sub = rospy.Subscriber(
@@ -173,6 +177,13 @@ class StanleyControllerNode:
         self._vz_cmd_timeout = float(rospy.get_param("~vz_cmd_timeout", 1.0))
         self._vz_estimation_alpha = float(rospy.get_param("~vz_estimation_alpha", 0.25))
 
+        # Near-goal stabilization and smoothing parameters.
+        self._goal_slowdown_distance = float(rospy.get_param("~goal_slowdown_distance", 0.0))
+        self._goal_stop_distance = float(rospy.get_param("~goal_stop_distance", 0.6))
+        self._min_forward_speed = float(rospy.get_param("~min_forward_speed", 0.03))
+        self._cmd_smoothing_alpha = float(rospy.get_param("~cmd_smoothing_alpha", 0.35))
+        self._yaw_rate_deadband = float(rospy.get_param("~yaw_rate_deadband", 0.01))
+
         # Normalize invalid values to deterministic defaults.
         if self._kp_z < 0.0:
             rospy.logwarn("~kp_z is negative (%.3f), clamp to 0.0", self._kp_z)
@@ -181,6 +192,10 @@ class StanleyControllerNode:
             rospy.logwarn("~z_deadband is negative (%.3f), clamp to 0.0", self._z_deadband)
             self._z_deadband = 0.0
         self._vz_estimation_alpha = float(np.clip(self._vz_estimation_alpha, 0.0, 1.0))
+        self._cmd_smoothing_alpha = float(np.clip(self._cmd_smoothing_alpha, 0.0, 1.0))
+        self._goal_slowdown_distance = max(self._goal_slowdown_distance, 0.0)
+        self._goal_stop_distance = max(self._goal_stop_distance, 0.0)
+        self._min_forward_speed = max(self._min_forward_speed, 0.0)
 
     def _pose_callback(self, msg):
         self._state.x = msg.pose.position.x
@@ -235,6 +250,7 @@ class StanleyControllerNode:
                 self._cz = [az[0]] * len(cx)
 
             self._spline_ready = True
+            self._last_target_idx = 0
             self._last_trajectory_time = rospy.Time.now()
             rospy.logdebug("Spline built: %d waypoints -> %d spline points",
                            len(poses), len(cx))
@@ -242,6 +258,7 @@ class StanleyControllerNode:
             rospy.logerr("Failed to build spline from trajectory: %s", e)
             self._spline_ready = False
             self._cz = None
+            self._last_target_idx = 0
 
     def _get_vz_feedforward(self):
         if not self._use_vz_ff_from_topic:
@@ -310,15 +327,38 @@ class StanleyControllerNode:
             self._cmd_pub.publish(twist)
             return
 
-        if self._enable_lateral_control and target_idx < len(self._cx) - 1:
+        # Keep target index monotonic across control ticks to reduce back-and-forth oscillation.
+        n_path = len(self._cx)
+        max_track_idx = max(0, n_path - 2)
+        target_idx = int(np.clip(max(target_idx, self._last_target_idx), 0, max_track_idx))
+
+        # Smoothly taper forward speed near final waypoint to avoid shaky stop behavior.
+        goal_dx = self._cx[-1] - state.x
+        goal_dy = self._cy[-1] - state.y
+        dist_to_goal = float(np.hypot(goal_dx, goal_dy))
+        if self._goal_slowdown_distance <= 0.0:
+            desired_v = self._target_velocity
+        else:
+            if dist_to_goal <= self._goal_stop_distance:
+                desired_v = 0.0
+            elif dist_to_goal < self._goal_slowdown_distance:
+                speed_scale = dist_to_goal / self._goal_slowdown_distance
+                desired_v = max(self._min_forward_speed, self._target_velocity * speed_scale)
+            else:
+                desired_v = self._target_velocity
+
+        if self._enable_lateral_control and n_path > 1:
             di, target_idx = stanley_control(
                 state, self._cx, self._cy, self._cyaw, target_idx,
                 self._k, self._L)
+            target_idx = int(np.clip(target_idx, 0, max_track_idx))
             di = np.clip(di, -self._max_steer, self._max_steer)
-            w = self._target_velocity / self._L * np.tan(di)
+            w = desired_v / self._L * np.tan(di)
             w = np.clip(w, -self._max_w, self._max_w)
+            if abs(w) < self._yaw_rate_deadband:
+                w = 0.0
 
-            twist.linear.x = self._target_velocity * self._factor_v
+            twist.linear.x = desired_v * self._factor_v
             twist.angular.z = w * self._factor_w
         else:
             twist.linear.x = 0.0
@@ -330,6 +370,17 @@ class StanleyControllerNode:
             twist.linear.z = self._compute_vertical_velocity_command(z_ref, state.z, vz_ff)
         else:
             twist.linear.z = 0.0
+
+        # First-order smoothing to suppress high-frequency jitter in ROS command stream.
+        a = self._cmd_smoothing_alpha
+        twist.linear.x = (1.0 - a) * self._last_cmd_linear_x + a * twist.linear.x
+        twist.angular.z = (1.0 - a) * self._last_cmd_angular_z + a * twist.angular.z
+        twist.linear.z = (1.0 - a) * self._last_cmd_linear_z + a * twist.linear.z
+
+        self._last_cmd_linear_x = twist.linear.x
+        self._last_cmd_angular_z = twist.angular.z
+        self._last_cmd_linear_z = twist.linear.z
+        self._last_target_idx = target_idx
 
         self._cmd_pub.publish(twist)
 

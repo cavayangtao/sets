@@ -410,9 +410,18 @@ class DronePlannerNode:
                         self._plan_success = False
                         return
 
-                    xs = np.array(result.planned_traj.xs)
-                    us = np.array(result.planned_traj.us)
-                    vz_cmds = np.array(result.planned_traj.vz_cmds, dtype=np.float64)
+                    traj = result.planned_traj
+                    xs = np.array(traj.xs)
+                    us = np.array(traj.us)
+                    vz_cmds_raw = getattr(traj, "vz_cmds", None)
+                    if vz_cmds_raw is None:
+                        rospy.logwarn_throttle(
+                            30.0,
+                            "Trajectory has no vz_cmds field in current bindings; using fallback.",
+                        )
+                        vz_cmds = np.array([], dtype=np.float64)
+                    else:
+                        vz_cmds = np.array(vz_cmds_raw, dtype=np.float64)
 
                     self._publish_trajectory(xs)
                     self._publish_control_sequence(us)
@@ -482,35 +491,35 @@ class DronePlannerNode:
 
         self._ctrl_pub.publish(msg)
 
-        def _publish_vertical_commands(self, us, vz_cmds):
-                """Publish backward-compatible vertical command extensions.
+    def _publish_vertical_commands(self, us, vz_cmds):
+        """Publish backward-compatible vertical command extensions.
 
-                Existing topics remain unchanged:
-                    - /planner/trajectory
-                    - /planner/control_seq
+        Existing topics remain unchanged:
+            - /planner/trajectory
+            - /planner/control_seq
 
-                New optional topics:
-                    - /planner/vz_cmd (Float64): first planned vertical command
-                    - /planner/vz_cmd_seq (Float64MultiArray): full command sequence
-                """
-                seq = np.array(vz_cmds, dtype=np.float64).reshape(-1)
+        New optional topics:
+            - /planner/vz_cmd (Float64): first planned vertical command
+            - /planner/vz_cmd_seq (Float64MultiArray): full command sequence
+        """
+        seq = np.array(vz_cmds, dtype=np.float64).reshape(-1)
 
-                # Fallback for trajectories without explicit vz_cmds in older bindings.
-                if seq.size == 0 and us.ndim == 2 and us.shape[1] >= 3:
-                        seq = us[:, 2].astype(np.float64)
+        # Fallback for trajectories without explicit vz_cmds in older bindings.
+        if seq.size == 0 and us.ndim == 2 and us.shape[1] >= 3:
+            seq = us[:, 2].astype(np.float64)
 
-                seq_msg = Float64MultiArray()
-                seq_msg.layout.dim.append(MultiArrayDimension(
-                        label="steps",
-                        size=int(seq.size),
-                        stride=max(1, int(seq.size))))
-                seq_msg.layout.data_offset = 0
-                seq_msg.data = seq.tolist()
-                self._vz_cmd_seq_pub.publish(seq_msg)
+        seq_msg = Float64MultiArray()
+        seq_msg.layout.dim.append(MultiArrayDimension(
+            label="steps",
+            size=int(seq.size),
+            stride=max(1, int(seq.size))))
+        seq_msg.layout.data_offset = 0
+        seq_msg.data = seq.tolist()
+        self._vz_cmd_seq_pub.publish(seq_msg)
 
-                cmd_msg = Float64()
-                cmd_msg.data = float(seq[0]) if seq.size > 0 else 0.0
-                self._vz_cmd_pub.publish(cmd_msg)
+        cmd_msg = Float64()
+        cmd_msg.data = float(seq[0]) if seq.size > 0 else 0.0
+        self._vz_cmd_pub.publish(cmd_msg)
 
     def _publish_status(self):
         msg = String()
