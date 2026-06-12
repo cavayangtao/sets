@@ -1,16 +1,22 @@
-**/build/**
-**/.vscode/**
-**/__pycache__/**
-*.orig
-.DS_Store
+# Generated artifacts
+plots/*
+!plots/.gitkeep
 
+# Large data files from policy convergence runs
 data/*
-!data/rollout_result_policy_convergence_tello_stage3_0.pkl
+!data/.gitkeep
 
-# Windows zone identifier files
-*.Identifier
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
 
-# Generated test plots (except v10 reference outputs)
-plots/drone_two_wp_test*
-plots/drone_obs_compare_*
-plots/tello_trajectory*
+# Build artifacts
+src/build/*.so
+
+# Windows zone identifier
+*:Zone.Identifier
+
+# Build output directories
+build/
+src/build/

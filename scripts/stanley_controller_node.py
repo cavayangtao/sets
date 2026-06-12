@@ -24,12 +24,6 @@ import sys
 import os
 import ast
 
-# Project imports for obstacle metadata loading.
-_project_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-sys.path.insert(0, os.path.join(_project_root, "src"))
-sys.path.insert(0, _project_root)
-from util import util
-
 # Import cubic spline planner from same directory
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _script_dir)
@@ -107,9 +101,6 @@ class StanleyControllerNode:
         self._last_cmd_linear_x = 0.0
         self._last_cmd_angular_z = 0.0
         self._last_cmd_linear_z = 0.0
-        self._obstacle_side_memory = 0.0
-
-        self._load_obstacle_xy_boxes()
 
         # Subscribers
         self._traj_sub = rospy.Subscriber(
@@ -187,6 +178,7 @@ class StanleyControllerNode:
         self._vz_estimation_alpha = float(rospy.get_param("~vz_estimation_alpha", 0.25))
 
         # Near-goal stabilization and smoothing parameters.
+        self._enable_goal_speed_taper = rospy.get_param("~enable_goal_speed_taper", False)
         self._goal_slowdown_distance = float(rospy.get_param("~goal_slowdown_distance", 0.0))
         self._goal_stop_distance = float(rospy.get_param("~goal_stop_distance", 0.6))
         self._min_forward_speed = float(rospy.get_param("~min_forward_speed", 0.03))
@@ -199,16 +191,6 @@ class StanleyControllerNode:
 
         # Spline de-duplication to avoid zero-length segments in cubic_spline_planner.
         self._min_waypoint_separation = float(rospy.get_param("~min_waypoint_separation", 0.05))
-
-        # Obstacle-side bias to break symmetric oscillation around obstacles.
-        self._enable_obstacle_side_bias = rospy.get_param("~enable_obstacle_side_bias", True)
-        self._obstacle_side_preference = float(rospy.get_param("~obstacle_side_preference", 1.0))
-        self._obstacle_influence_margin = float(rospy.get_param("~obstacle_influence_margin", 6.0))
-        self._obstacle_repulsion_gain = float(rospy.get_param("~obstacle_repulsion_gain", 0.10))
-        self._obstacle_side_bias_gain = float(rospy.get_param("~obstacle_side_bias_gain", 0.08))
-        self._obstacle_max_bias_w = float(rospy.get_param("~obstacle_max_bias_w", 0.20))
-        self._obstacle_release_margin = float(rospy.get_param("~obstacle_release_margin", 8.0))
-        self._obstacle_center_epsilon = float(rospy.get_param("~obstacle_center_epsilon", 0.20))
 
         # Normalize invalid values to deterministic defaults.
         if self._kp_z < 0.0:
@@ -225,76 +207,6 @@ class StanleyControllerNode:
         self._timeout_hold_max = max(self._timeout_hold_max, 0.0)
         self._timeout_hold_decay = float(np.clip(self._timeout_hold_decay, 0.0, 1.0))
         self._min_waypoint_separation = max(self._min_waypoint_separation, 0.0)
-
-        if self._obstacle_side_preference == 0.0:
-            self._obstacle_side_preference = 1.0
-        self._obstacle_influence_margin = max(self._obstacle_influence_margin, 1e-3)
-        self._obstacle_release_margin = max(self._obstacle_release_margin, self._obstacle_influence_margin)
-        self._obstacle_max_bias_w = max(self._obstacle_max_bias_w, 0.0)
-        self._obstacle_center_epsilon = max(self._obstacle_center_epsilon, 0.0)
-
-    def _load_obstacle_xy_boxes(self):
-        self._obstacle_xy_boxes = []
-        if not self._enable_obstacle_side_bias:
-            return
-
-        config_name = rospy.get_param(
-            "~obstacle_config_name",
-            rospy.get_param("/drone_planner/config_name", "policy_convergence_drone"),
-        )
-        try:
-            cfg = util.load_yaml(util.get_config_path(config_name))
-            obstacles = util.get_obstacles(cfg, 0)
-            for obs in obstacles:
-                x0, x1 = float(obs[0, 0]), float(obs[0, 1])
-                y0, y1 = float(obs[1, 0]), float(obs[1, 1])
-                self._obstacle_xy_boxes.append((min(x0, x1), max(x0, x1), min(y0, y1), max(y0, y1)))
-            rospy.loginfo("Loaded %d obstacle boxes for side bias from %s",
-                          len(self._obstacle_xy_boxes), config_name)
-        except Exception as e:
-            rospy.logwarn("Failed to load obstacle boxes for side bias: %s", e)
-            self._obstacle_xy_boxes = []
-
-    @staticmethod
-    def _distance_to_box_2d(x, y, box):
-        xmin, xmax, ymin, ymax = box
-        dx = max(xmin - x, 0.0, x - xmax)
-        dy = max(ymin - y, 0.0, y - ymax)
-        return float(np.hypot(dx, dy))
-
-    def _compute_obstacle_yaw_bias(self, state):
-        if not self._enable_obstacle_side_bias or not self._obstacle_xy_boxes:
-            self._obstacle_side_memory = 0.0
-            return 0.0
-
-        bias = 0.0
-        near_any = False
-
-        for box in self._obstacle_xy_boxes:
-            d = self._distance_to_box_2d(state.x, state.y, box)
-            if d > self._obstacle_release_margin:
-                continue
-
-            near_any = True
-            if self._obstacle_side_memory == 0.0:
-                y_center = 0.5 * (box[2] + box[3])
-                signed = state.y - y_center
-                if abs(signed) <= self._obstacle_center_epsilon:
-                    signed = self._obstacle_side_preference
-                self._obstacle_side_memory = 1.0 if signed >= 0.0 else -1.0
-
-            if d > self._obstacle_influence_margin:
-                continue
-
-            weight = 1.0 - d / self._obstacle_influence_margin
-            repulsive = self._obstacle_repulsion_gain * weight
-            directional = self._obstacle_side_bias_gain * weight
-            bias += self._obstacle_side_memory * (repulsive + directional)
-
-        if not near_any:
-            self._obstacle_side_memory = 0.0
-
-        return float(np.clip(bias, -self._obstacle_max_bias_w, self._obstacle_max_bias_w))
 
     def _pose_callback(self, msg):
         self._state.x = msg.pose.position.x
@@ -486,7 +398,7 @@ class StanleyControllerNode:
         goal_dx = self._cx[-1] - state.x
         goal_dy = self._cy[-1] - state.y
         dist_to_goal = float(np.hypot(goal_dx, goal_dy))
-        if self._goal_slowdown_distance <= 0.0:
+        if (not self._enable_goal_speed_taper) or self._goal_slowdown_distance <= 0.0:
             desired_v = self._target_velocity
         else:
             if dist_to_goal <= self._goal_stop_distance:
@@ -504,7 +416,6 @@ class StanleyControllerNode:
             target_idx = int(np.clip(target_idx, 0, max_track_idx))
             di = np.clip(di, -self._max_steer, self._max_steer)
             w = desired_v / self._L * np.tan(di)
-            w += self._compute_obstacle_yaw_bias(state)
             w = np.clip(w, -self._max_w, self._max_w)
             if abs(w) < self._yaw_rate_deadband:
                 w = 0.0
@@ -522,11 +433,11 @@ class StanleyControllerNode:
         else:
             twist.linear.z = 0.0
 
-        # First-order smoothing to suppress high-frequency jitter in ROS command stream.
-        a = self._cmd_smoothing_alpha
-        twist.linear.x = (1.0 - a) * self._last_cmd_linear_x + a * twist.linear.x
-        twist.angular.z = (1.0 - a) * self._last_cmd_angular_z + a * twist.angular.z
-        twist.linear.z = (1.0 - a) * self._last_cmd_linear_z + a * twist.linear.z
+        # # First-order smoothing to suppress high-frequency jitter in ROS command stream.
+        # a = self._cmd_smoothing_alpha
+        # twist.linear.x = (1.0 - a) * self._last_cmd_linear_x + a * twist.linear.x
+        # twist.angular.z = (1.0 - a) * self._last_cmd_angular_z + a * twist.angular.z
+        # twist.linear.z = (1.0 - a) * self._last_cmd_linear_z + a * twist.linear.z
 
         self._last_cmd_linear_x = twist.linear.x
         self._last_cmd_angular_z = twist.angular.z

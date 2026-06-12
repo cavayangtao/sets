@@ -185,12 +185,6 @@ class DronePlannerNode:
         self._vel_lpf_tau = rospy.get_param("~vel_lpf_tau", 0.15)
         self._vel_diff_max_dt = rospy.get_param("~vel_diff_max_dt", 0.5)
 
-        # Optional symmetry-breaking obstacle side bias for smoother avoidance.
-        self._enable_obstacle_side_bias = rospy.get_param("~enable_obstacle_side_bias", True)
-        self._obstacle_side_bias = float(rospy.get_param("~obstacle_side_bias", 5.0))
-        self._obstacle_bias_sign = float(rospy.get_param("~obstacle_bias_sign", 1.0))
-        self._obstacle_bias_trigger_margin = float(rospy.get_param("~obstacle_bias_trigger_margin", 10.0))
-
         _scale_xyz = rospy.get_param("~mocap_to_planner_scale_xyz", [1.0, 1.0, 1.0])
         if isinstance(_scale_xyz, str):
             try:
@@ -293,47 +287,6 @@ class DronePlannerNode:
 
         rospy.loginfo("Planner objects created: MDP state_dim=%d, N=%d, obstacles=%d",
                       self._ground_mdp.state_dim(), self._uct_N, len(obstacles))
-
-    def _apply_obstacle_side_bias(self, state, base_target):
-        """Return a transient, biased target to break symmetric obstacle hesitation."""
-        if not self._enable_obstacle_side_bias or not hasattr(self, "_obstacles"):
-            return base_target
-
-        if abs(self._obstacle_side_bias) < 1e-9:
-            return base_target
-
-        target = np.array(base_target, dtype=np.float64).copy()
-        sx = float(state[0])
-        sy = float(state[1])
-        tx = float(target[0])
-
-        moving_sign = 1.0 if tx >= sx else -1.0
-        trig = max(0.0, self._obstacle_bias_trigger_margin)
-        side_sign = 1.0 if self._obstacle_bias_sign >= 0.0 else -1.0
-
-        for obs in self._obstacles:
-            try:
-                x_min, x_max = sorted([float(obs[0, 0]), float(obs[0, 1])])
-                y_min, y_max = sorted([float(obs[1, 0]), float(obs[1, 1])])
-            except Exception:
-                continue
-
-            corridor_hit = (y_min - trig) <= sy <= (y_max + trig)
-            if not corridor_hit:
-                continue
-
-            if moving_sign > 0.0:
-                approaching = sx <= (x_max + trig) and tx >= (x_min - trig)
-            else:
-                approaching = sx >= (x_min - trig) and tx <= (x_max + trig)
-
-            if not approaching:
-                continue
-
-            target[1] += side_sign * self._obstacle_side_bias
-            return target
-
-        return target
 
     def _setup_ros(self):
         self._pose_sub = rospy.Subscriber(
@@ -446,11 +399,10 @@ class DronePlannerNode:
                 rospy.logwarn("State invalid: %s", np.array2string(state, precision=2))
                 return
 
-            # Bias only the planning target online; keep user target unchanged.
+            # Use user target directly; obstacle avoidance relies on planner dynamics/costs.
             with self._lock:
                 base_target = np.array(self._target_pos, dtype=np.float64).reshape(-1)
-            runtime_target = self._apply_obstacle_side_bias(state, base_target)
-            self._ground_mdp.set_xd(runtime_target.reshape(-1, 1))
+            self._ground_mdp.set_xd(base_target.reshape(-1, 1))
 
             result = run_uct2(self._dots_mdp, self._uct, state, self._rng)
             t_elapsed = time.time() - t_start
