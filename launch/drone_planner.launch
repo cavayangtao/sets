@@ -20,6 +20,14 @@
   <arg name="z_deadband"        default="0.05"/>
   <arg name="vz_limit"          default="[-2.0, 2.0]"/>
 
+  <!-- ===== Visualization args ===== -->
+  <arg name="enable_visualization"         default="false"/>
+  <arg name="visualization_history_window" default="60.0"/>
+
+  <!-- ===== Spline / path following ===== -->
+  <arg name="use_spline_interpolation" default="false"/>
+  <arg name="monotonic_target_index"   default="false"/>
+
   <!-- ===== Planner Node ===== -->
   <node name="drone_planner" pkg="sets" type="drone_planner_node.py"
         output="screen" respawn="false">
@@ -118,5 +126,14 @@
     <param name="timeout_hold_max"   value="2.0"/>
     <param name="timeout_hold_decay" value="0.985"/>
     <param name="min_waypoint_separation" value="0.01"/>
+
+    <!-- spline / path following -->
+    <param name="use_spline_interpolation" value="$(arg use_spline_interpolation)"/>
+    <param name="monotonic_target_index"   value="$(arg monotonic_target_index)"/>
+
+    <!-- visualization -->
+    <param name="enable_visualization"           value="$(arg enable_visualization)"/>
+    <param name="visualization_history_window"   value="$(arg visualization_history_window)"/>
+    <param name="visualization_max_history_points" value="5000"/>
   </node>
 </launch>

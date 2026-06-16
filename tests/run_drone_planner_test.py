@@ -558,6 +558,13 @@ def save_plots(samples, wp0, wp1, out_prefix, config_name="policy_convergence_dr
 
     xmin, xmax = np.min(x), np.max(x)
     ymin, ymax = np.min(y), np.max(y)
+    if boxes:
+        obs_xmin = min(min(bx[0], bx[1]) for bx, _, _ in boxes)
+        obs_xmax = max(max(bx[0], bx[1]) for bx, _, _ in boxes)
+        obs_ymin = min(min(by[0], by[1]) for _, by, _ in boxes)
+        obs_ymax = max(max(by[0], by[1]) for _, by, _ in boxes)
+        xmin, xmax = min(xmin, obs_xmin), max(xmax, obs_xmax)
+        ymin, ymax = min(ymin, obs_ymin), max(ymax, obs_ymax)
     pad = 3.0
     ax2.set_xlim(min(xmin, wp0[0], wp1[0]) - pad, max(xmax, wp0[0], wp1[0]) + pad)
     ax2.set_ylim(min(ymin, wp0[1], wp1[1]) - pad, max(ymax, wp0[1], wp1[1]) + pad)
@@ -687,6 +694,13 @@ def main():
     args = ap.parse_args()
 
     rospy.init_node("drone_planner_test_runner", anonymous=True)
+
+    if args.reach_dist >= 8.0:
+        rospy.logwarn(
+            "reach-dist=%.2f m is permissive: mission may be marked reached "
+            "before physically arriving near the waypoint.",
+            args.reach_dist,
+        )
 
     runner = DroneTestRunner(args)
     result = None

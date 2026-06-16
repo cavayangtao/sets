@@ -23,6 +23,8 @@ import numpy as np
 import sys
 import os
 import ast
+import math
+import threading
 
 # Import cubic spline planner from same directory
 _script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -65,11 +67,12 @@ def calc_target_index(state, cx, cy, L):
     return target_idx, error_front_axle
 
 
-def stanley_control(state, cx, cy, cyaw, last_target_idx, k, L):
+def stanley_control(state, cx, cy, cyaw, last_target_idx, k, L,
+                    monotonic=True):
     """Stanley steering control law."""
     current_target_idx, error_front_axle = calc_target_index(state, cx, cy, L)
 
-    if last_target_idx >= current_target_idx:
+    if monotonic and last_target_idx >= current_target_idx:
         current_target_idx = last_target_idx
 
     theta_e = normalize_angle(cyaw[current_target_idx] - state.yaw)
@@ -115,7 +118,15 @@ class StanleyControllerNode:
         # Publisher
         self._cmd_pub = rospy.Publisher(self._cmd_vel_topic, Twist, queue_size=10)
 
-        # Control timer
+        # Visualization (conditional)
+        self._load_viz_params()
+        self._visualizer = None
+        self._viz_lock = None
+        self._viz_data = None
+        if self._enable_visualization:
+            self._init_visualization()
+
+        # Control timer (start after all fields are initialized)
         self._control_timer = rospy.Timer(
             rospy.Duration(1.0 / self._control_rate), self._control_callback)
 
@@ -182,8 +193,14 @@ class StanleyControllerNode:
         self._goal_slowdown_distance = float(rospy.get_param("~goal_slowdown_distance", 0.0))
         self._goal_stop_distance = float(rospy.get_param("~goal_stop_distance", 0.6))
         self._min_forward_speed = float(rospy.get_param("~min_forward_speed", 0.03))
-        self._cmd_smoothing_alpha = float(rospy.get_param("~cmd_smoothing_alpha", 0.35))
         self._yaw_rate_deadband = float(rospy.get_param("~yaw_rate_deadband", 0.01))
+
+        # cmd_smoothing_alpha and the first-order low-pass smoothing on
+        # /cmd_vel have been removed.  The smoothing added latency without
+        # measurably reducing waypoint-tracking jitter in the current
+        # setup.  To restore, re-add ~cmd_smoothing_alpha and uncomment
+        # the exponential-moving-average block at the end of
+        # _control_callback.
 
         # Smooth timeout handling: hold then softly decay instead of hard stop.
         self._timeout_hold_max = float(rospy.get_param("~timeout_hold_max", 2.0))
@@ -191,6 +208,14 @@ class StanleyControllerNode:
 
         # Spline de-duplication to avoid zero-length segments in cubic_spline_planner.
         self._min_waypoint_separation = float(rospy.get_param("~min_waypoint_separation", 0.05))
+
+        # Toggle: when false, track raw planner waypoints directly (no spline).
+        self._use_spline_interpolation = rospy.get_param(
+            "~use_spline_interpolation", True)
+
+        # Toggle: when false, allow target index to move backward along path.
+        self._monotonic_target_index = rospy.get_param(
+            "~monotonic_target_index", True)
 
         # Normalize invalid values to deterministic defaults.
         if self._kp_z < 0.0:
@@ -200,13 +225,135 @@ class StanleyControllerNode:
             rospy.logwarn("~z_deadband is negative (%.3f), clamp to 0.0", self._z_deadband)
             self._z_deadband = 0.0
         self._vz_estimation_alpha = float(np.clip(self._vz_estimation_alpha, 0.0, 1.0))
-        self._cmd_smoothing_alpha = float(np.clip(self._cmd_smoothing_alpha, 0.0, 1.0))
         self._goal_slowdown_distance = max(self._goal_slowdown_distance, 0.0)
         self._goal_stop_distance = max(self._goal_stop_distance, 0.0)
         self._min_forward_speed = max(self._min_forward_speed, 0.0)
         self._timeout_hold_max = max(self._timeout_hold_max, 0.0)
         self._timeout_hold_decay = float(np.clip(self._timeout_hold_decay, 0.0, 1.0))
         self._min_waypoint_separation = max(self._min_waypoint_separation, 0.0)
+
+    def _load_viz_params(self):
+        """Load visualization-related parameters."""
+        self._enable_visualization = rospy.get_param(
+            "~enable_visualization", False)
+        self._viz_history_window = max(0.0, float(rospy.get_param(
+            "~visualization_history_window", 60.0)))
+        self._viz_max_history_points = max(1, int(rospy.get_param(
+            "~visualization_max_history_points", 5000)))
+
+    def _init_visualization(self):
+        """Conditionally import and start the StanleyVisualizer."""
+        try:
+            import stanley_visualizer  # noqa: F811
+        except ImportError:
+            rospy.logwarn(
+                "stanley_visualizer module not found; visualization disabled")
+            self._enable_visualization = False
+            return
+
+        config_name = rospy.get_param(
+            "/drone_planner/config_name", "policy_convergence_drone")
+
+        self._viz_lock = threading.Lock()
+        self._viz_data = {
+            "raw_path_x": [],
+            "raw_path_y": [],
+            "spline_x": [],
+            "spline_y": [],
+            "traj_x": [],
+            "traj_y": [],
+            "traj_t": [],
+            "current_x": 0.0,
+            "current_y": 0.0,
+            "obstacle_boxes": [],
+            "start_x": None,
+            "start_y": None,
+            "target_x": None,
+            "target_y": None,
+        }
+
+        try:
+            self._visualizer = stanley_visualizer.StanleyVisualizer(
+                viz_lock=self._viz_lock,
+                viz_data=self._viz_data,
+                config_name=config_name,
+            )
+            if not self._visualizer.start():
+                rospy.logwarn(
+                    "Visualization failed to start; disabling")
+                self._enable_visualization = False
+                return
+            rospy.loginfo(
+                "Visualization enabled: config=%s window=%.1fs max_points=%d",
+                config_name,
+                self._viz_history_window,
+                self._viz_max_history_points,
+            )
+        except Exception as e:
+            rospy.logwarn("Failed to start visualization: %s; continuing without viz", e)
+            self._enable_visualization = False
+
+    def _append_trajectory_sample(self, x, y):
+        """Append a pose sample to the trajectory buffer with sliding window."""
+        now = rospy.Time.now().to_sec()
+        window = self._viz_history_window
+        max_points = self._viz_max_history_points
+
+        with self._viz_lock:
+            data = self._viz_data
+            data["traj_x"].append(x)
+            data["traj_y"].append(y)
+            data["traj_t"].append(now)
+            data["current_x"] = x
+            data["current_y"] = y
+
+            if data["start_x"] is None:
+                data["start_x"] = x
+                data["start_y"] = y
+
+            # Slide window: remove points older than window.
+            # Use index-based cutoff + single slice (O(n)) instead of
+            # repeated pop(0) (O(n²)) to keep the lock hold short.
+            cutoff = now - window
+            cut_idx = 0
+            n = len(data["traj_t"])
+            while cut_idx < n and data["traj_t"][cut_idx] < cutoff:
+                cut_idx += 1
+            if cut_idx > 0:
+                data["traj_t"] = data["traj_t"][cut_idx:]
+                data["traj_x"] = data["traj_x"][cut_idx:]
+                data["traj_y"] = data["traj_y"][cut_idx:]
+
+            # Downsample if over max_points
+            n = len(data["traj_t"])
+            if n > max_points:
+                step = max(2, int(math.ceil(n / float(max_points))))
+                data["traj_x"] = data["traj_x"][::step]
+                data["traj_y"] = data["traj_y"][::step]
+                data["traj_t"] = data["traj_t"][::step]
+
+    def _update_viz_target_from_param(self):
+        """Read the current target position from the ROS param server."""
+        try:
+            raw = rospy.get_param("/drone_planner/target_pos", None)
+            if raw is None:
+                return
+            if isinstance(raw, str):
+                try:
+                    raw = ast.literal_eval(raw)
+                except Exception:
+                    return
+            if not isinstance(raw, (list, tuple)):
+                return
+            target = list(raw)
+            if len(target) >= 2:
+                with self._viz_lock:
+                    self._viz_data["target_x"] = float(target[0])
+                    self._viz_data["target_y"] = float(target[1])
+        except (TypeError, ValueError) as e:
+            rospy.logwarn_throttle(
+                30.0,
+                "Failed to parse /drone_planner/target_pos for viz: %s", e)
 
     def _pose_callback(self, msg):
         self._state.x = msg.pose.position.x
@@ -230,6 +377,10 @@ class StanleyControllerNode:
 
         self._last_pose_time = stamp
         self._last_pose_z = self._state.z
+
+        # Append sample to visualization trajectory buffer
+        if self._enable_visualization:
+            self._append_trajectory_sample(self._state.x, self._state.y)
 
     def _vz_cmd_callback(self, msg):
         self._latest_vz_ff = float(msg.data)
@@ -272,38 +423,74 @@ class StanleyControllerNode:
             ay = [p[1] for p in dedup]
             az = [p[2] for p in dedup]
 
-        had_spline = self._spline_ready
+        had_path = self._spline_ready
 
         try:
-            cx, cy, cyaw, ck, s = cubic_spline_planner.calc_spline_course(
-                ax, ay, ds=self._spline_ds)
-            if len(cx) < 2:
-                rospy.logwarn_throttle(2.0, "Spline has < 2 points after dedup, ignoring trajectory")
-                return
+            if self._use_spline_interpolation:
+                cx, cy, cyaw, ck, s = cubic_spline_planner.calc_spline_course(
+                    ax, ay, ds=self._spline_ds)
+                if len(cx) < 2:
+                    rospy.logwarn_throttle(2.0,
+                        "Spline has < 2 points, ignoring trajectory")
+                    return
+                # Interpolate z to match spline point count
+                if len(az) >= 2:
+                    src = np.arange(len(az), dtype=np.float64)
+                    dst = np.linspace(0.0, len(az) - 1, num=len(cx),
+                                     dtype=np.float64)
+                    cz = np.interp(dst, src, np.array(az, dtype=np.float64)).tolist()
+                else:
+                    cz = [az[0]] * len(cx)
+                rospy.logdebug("Spline built: %d waypoints -> %d spline points",
+                               len(poses), len(cx))
+            else:
+                # Direct waypoint tracking: no spline interpolation.
+                cx = list(ax)
+                cy = list(ay)
+                cz = list(az)
+                # Compute yaw from consecutive waypoint deltas.
+                cyaw = []
+                for i in range(len(cx) - 1):
+                    cyaw.append(math.atan2(cy[i + 1] - cy[i],
+                                           cx[i + 1] - cx[i]))
+                cyaw.append(cyaw[-1] if cyaw else 0.0)
+                rospy.logdebug("Raw path: %d waypoints (no spline)", len(cx))
+
             self._cx = cx
             self._cy = cy
             self._cyaw = cyaw
-
-            if len(az) >= 2:
-                src = np.arange(len(az), dtype=np.float64)
-                dst = np.linspace(0.0, len(az) - 1, num=len(cx), dtype=np.float64)
-                self._cz = np.interp(dst, src, np.array(az, dtype=np.float64)).tolist()
-            else:
-                self._cz = [az[0]] * len(cx)
+            self._cz = cz
 
             self._spline_ready = True
-            if not had_spline:
+            if not had_path:
                 self._last_target_idx = 0
             else:
-                self._last_target_idx = int(np.clip(self._last_target_idx, 0, max(0, len(cx) - 2)))
+                self._last_target_idx = int(np.clip(
+                    self._last_target_idx, 0, max(0, len(cx) - 1)))
             self._last_trajectory_time = rospy.Time.now()
-            rospy.logdebug("Spline built: %d waypoints -> %d spline points",
-                           len(poses), len(cx))
+
+            # Update visualization shared buffer
+            if self._enable_visualization and self._viz_data is not None:
+                with self._viz_lock:
+                    self._viz_data["raw_path_x"] = ax
+                    self._viz_data["raw_path_y"] = ay
+                    self._viz_data["spline_x"] = cx
+                    self._viz_data["spline_y"] = cy
+
         except Exception as e:
-            rospy.logerr("Failed to build spline from trajectory: %s", e)
+            rospy.logerr("Failed to build path from trajectory: %s", e)
             self._spline_ready = False
             self._cz = None
             self._last_target_idx = 0
+
+            # Clear viz path data so the window doesn't show a stale path
+            # while the controller has stopped tracking.
+            if self._enable_visualization and self._viz_data is not None:
+                with self._viz_lock:
+                    self._viz_data["raw_path_x"] = []
+                    self._viz_data["raw_path_y"] = []
+                    self._viz_data["spline_x"] = []
+                    self._viz_data["spline_y"] = []
 
     def _get_vz_feedforward(self):
         if not self._use_vz_ff_from_topic:
@@ -354,6 +541,10 @@ class StanleyControllerNode:
         """Timer callback: compute and publish control command."""
         twist = Twist()
 
+        # Update visualization target from param server
+        if self._enable_visualization and self._viz_data is not None:
+            self._update_viz_target_from_param()
+
         # Check trajectory timeout
         dt = (rospy.Time.now() - self._last_trajectory_time).to_sec()
         if not self._spline_ready:
@@ -391,8 +582,13 @@ class StanleyControllerNode:
 
         # Keep target index monotonic across control ticks to reduce back-and-forth oscillation.
         n_path = len(self._cx)
-        max_track_idx = max(0, n_path - 2)
-        target_idx = int(np.clip(max(target_idx, self._last_target_idx), 0, max_track_idx))
+        # Track up to the final path point; clipping to n-2 can cause
+        # persistent stand-off near the goal for short/locally planned paths.
+        max_track_idx = max(0, n_path - 1)
+        if self._monotonic_target_index:
+            target_idx = int(np.clip(max(target_idx, self._last_target_idx), 0, max_track_idx))
+        else:
+            target_idx = int(np.clip(target_idx, 0, max_track_idx))
 
         # Smoothly taper forward speed near final waypoint to avoid shaky stop behavior.
         goal_dx = self._cx[-1] - state.x
@@ -412,7 +608,7 @@ class StanleyControllerNode:
         if self._enable_lateral_control and n_path > 1:
             di, target_idx = stanley_control(
                 state, self._cx, self._cy, self._cyaw, target_idx,
-                self._k, self._L)
+                self._k, self._L, monotonic=self._monotonic_target_index)
             target_idx = int(np.clip(target_idx, 0, max_track_idx))
             di = np.clip(di, -self._max_steer, self._max_steer)
             w = desired_v / self._L * np.tan(di)
@@ -432,12 +628,6 @@ class StanleyControllerNode:
             twist.linear.z = self._compute_vertical_velocity_command(z_ref, state.z, vz_ff)
         else:
             twist.linear.z = 0.0
-
-        # # First-order smoothing to suppress high-frequency jitter in ROS command stream.
-        # a = self._cmd_smoothing_alpha
-        # twist.linear.x = (1.0 - a) * self._last_cmd_linear_x + a * twist.linear.x
-        # twist.angular.z = (1.0 - a) * self._last_cmd_angular_z + a * twist.angular.z
-        # twist.linear.z = (1.0 - a) * self._last_cmd_linear_z + a * twist.linear.z
 
         self._last_cmd_linear_x = twist.linear.x
         self._last_cmd_angular_z = twist.angular.z
