@@ -474,8 +474,12 @@ class StanleyControllerNode:
                 with self._viz_lock:
                     self._viz_data["raw_path_x"] = ax
                     self._viz_data["raw_path_y"] = ay
-                    self._viz_data["spline_x"] = cx
-                    self._viz_data["spline_y"] = cy
+                    if self._use_spline_interpolation:
+                        self._viz_data["spline_x"] = cx
+                        self._viz_data["spline_y"] = cy
+                    else:
+                        self._viz_data["spline_x"] = []
+                        self._viz_data["spline_y"] = []
 
         except Exception as e:
             rospy.logerr("Failed to build path from trajectory: %s", e)
